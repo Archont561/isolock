@@ -1,6 +1,6 @@
 schema = 1
 branch_prefix = "sandbox"
-cargo_vendor = false
+cargo_vendor = true
 
 [budgets]
 max_blob_mib = 95
