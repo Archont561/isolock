@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Code Quality and Security Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4a29a1b913840e4fbe61d6706f9be2f5c18e95c1 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Check Formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@b16e4513eb194cb0b23028fb603bdcd83a9a6b57 # cargo-deny
+        with:
+          tool: cargo-deny
+
+      - name: Supply Chain and License Audit
+        run: cargo deny check bans licenses sources
+
+  test-and-coverage:
+    name: Hermetic Tests & Line Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Rust & Tools
+        uses: dtolnay/rust-toolchain@4a29a1b913840e4fbe61d6706f9be2f5c18e95c1 # stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Install Nextest & LLVM-Cov
+        uses: taiki-e/install-action@b16e4513eb194cb0b23028fb603bdcd83a9a6b57
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+
+      - name: Run Nextest Suite
+        run: cargo nextest run --workspace
+
+      - name: Run BDD and Property Tests
+        run: cargo test --workspace
+
+      - name: Generate Code Coverage Report
+        run: |
+          mkdir -p coverage
+          cargo llvm-cov --workspace --all-features --lcov --output-path coverage/lcov.info
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
+        with:
+          files: coverage/lcov.info
+          flags: rust
+          fail_ci_if_error: false

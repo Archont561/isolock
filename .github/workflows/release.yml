@@ -1,0 +1,192 @@
+name: Release & Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.1.0)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            binary_name: isolock
+            archive_name: isolock-linux-x86_64.tar.gz
+            conda_arch: linux-64
+          - os: macos-latest
+            platform: macos-arm64
+            target: aarch64-apple-darwin
+            binary_name: isolock
+            archive_name: isolock-macos-arm64.tar.gz
+            conda_arch: osx-arm64
+          - os: windows-latest
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            binary_name: isolock.exe
+            archive_name: isolock-windows-x86_64.tar.gz
+            conda_arch: win-64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@4a29a1b913840e4fbe61d6706f9be2f5c18e95c1 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Setup Pixi
+        uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+        with:
+          pixi-version: latest
+          cache: true
+
+      - name: Install rattler-build
+        run: pixi global install rattler-build
+
+      - name: Build Standalone Rust Binary
+        run: cargo build --release --locked --package isolock --target ${{ matrix.target }}
+
+      - name: Stage Standalone Binary Artifacts
+        shell: bash
+        run: |
+          mkdir -p dist/binaries
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/isolock.exe" "dist/binaries/isolock-${{ matrix.platform }}.exe"
+            tar -czvf "dist/binaries/${{ matrix.archive_name }}" -C "target/${{ matrix.target }}/release" isolock.exe
+          else
+            cp "target/${{ matrix.target }}/release/isolock" "dist/binaries/isolock-${{ matrix.platform }}"
+            chmod +x "dist/binaries/isolock-${{ matrix.platform }}"
+            tar -czvf "dist/binaries/${{ matrix.archive_name }}" -C "target/${{ matrix.target }}/release" isolock
+          fi
+
+      - name: Build Conda Package
+        shell: bash
+        run: |
+          mkdir -p dist/conda
+          rattler-build build --recipe crates/isolock/recipe.yaml --target-platform ${{ matrix.conda_arch }} --output-dir dist/conda
+
+      - name: Upload Standalone Binary Artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binary-${{ matrix.platform }}
+          path: dist/binaries/*
+          if-no-files-found: error
+
+      - name: Upload Conda Package Artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: conda-${{ matrix.platform }}
+          path: dist/conda/**/*.conda
+          if-no-files-found: error
+
+  publish-conda:
+    name: Publish Conda Packages to prefix.dev
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: prefix
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download Conda package artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: conda-*
+          path: dist/conda
+          merge-multiple: true
+
+      - name: Setup Pixi
+        uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+        with:
+          pixi-version: latest
+          cache: true
+
+      - name: Install rattler-build
+        run: pixi global install rattler-build
+
+      - name: Verify GitHub OIDC Permissions
+        shell: bash
+        run: |
+          : "${ACTIONS_ID_TOKEN_REQUEST_URL:?missing GitHub OIDC request URL; grant permissions.id-token: write}"
+          : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?missing GitHub OIDC request token; grant permissions.id-token: write}"
+
+      - name: Publish Package to prefix.dev (Trusted Publishing OIDC)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rattler-build upload prefix \
+            --channel archont561/archont561 \
+            --generate-attestation \
+            --store-github-attestation \
+            --skip-existing \
+            dist/conda/**/*.conda
+
+  publish-github:
+    name: Publish GitHub Release
+    needs: [build, publish-conda]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Download Standalone Binary Artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: binary-*
+          path: dist/binaries
+          merge-multiple: true
+
+      - name: Download Conda Package Artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: conda-*
+          path: dist/conda
+          merge-multiple: true
+
+      - name: Stage Release Assets and Generate SHA256SUMS
+        shell: bash
+        run: |
+          mkdir -p dist/release
+          find dist/binaries dist/conda -type f -exec cp {} dist/release/ \;
+          cd dist/release
+          sha256sum ./* > SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          files: dist/release/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

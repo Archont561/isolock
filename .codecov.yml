@@ -1,0 +1,37 @@
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  precision: 2
+  round: down
+  range: "90...100"
+  status:
+    project:
+      default: false
+      rust:
+        flags: [rust]
+        target: 90%
+        threshold: 0%
+    patch:
+      default:
+        target: 90%
+        threshold: 0%
+
+flags:
+  rust:
+    paths:
+      - crates/isolock/src/
+      - crates/isolock-version/src/
+    carryforward: true
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: false
+
+ignore:
+  - "**/target/**"
+  - "**/tests/**"
+  - "**/*.feature"
+  - "templates/**"
+  - ".alint/**"
