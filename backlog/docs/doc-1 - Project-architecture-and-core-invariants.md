@@ -21,7 +21,7 @@ Isolock establishes that hermetic dependency management across multi-language re
 
 | Capability | Specification Invariant | Key Mechanism | Target Rust Crate |
 | :--- | :--- | :--- | :--- |
-| Content-Addressed Storage | SHA-256 Digest Addressability | Sharded hierarchy `blobs/sha256/<h[:2]>/<h>/<file>` | `isolock-cas` |
+| Content-Addressed Storage | SHA-256 Digest Addressability | Sharded hierarchy `blobs/sha256/<h[:2]>/<h[2:4]>/<h>/<file>` | `isolock-cas` |
 | Blob Sharding | Large Archive Partitioning | >95 MiB chunks (`.part000`, etc.), POSIX `cat` reassembly | `isolock-cas` |
 | Git Orphan Branch | Decentralized Object Storage | `git commit-tree` / `update-ref` without checkout | `isolock-core`, `isolock-cas` |
 | Epoch Rollover | Bounded Shallow Clones | Rollover to `isolock/v2` when branch exceeds 1,500 MiB | `isolock-cas` |

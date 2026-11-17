@@ -61,9 +61,9 @@ backlog/
 | :--- | :--- | :--- | :--- |
 | **m-0** | Repository Foundation and Governance | `ISO-1`, `ISO-2` | Complete |
 | **m-1** | CAS Engine and Blob Storage | `ISO-3`, `ISO-4` | Complete |
-| **m-2** | Multi-Ecosystem Proxy Resolvers | `ISO-5`, `ISO-6`, `ISO-7` | In Progress |
-| **m-3** | Lockfile Plan Drift and CI Airlock | `ISO-8`, `ISO-9` | In Progress |
-| **m-4** | CLI Execution and Environment Bootstrap | `ISO-10`, `ISO-11` | In Progress |
+| **m-2** | Multi-Ecosystem Proxy Resolvers | `ISO-5`, `ISO-6`, `ISO-7` | Complete |
+| **m-3** | Lockfile Plan Drift and CI Airlock | `ISO-8`, `ISO-9` | Complete |
+| **m-4** | CLI Execution and Environment Bootstrap | `ISO-10`, `ISO-11` | Complete |
 
 ---
 

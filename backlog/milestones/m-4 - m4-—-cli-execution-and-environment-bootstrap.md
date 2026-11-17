@@ -12,11 +12,11 @@ Exit condition: `isolock exec <cmd> [args...]` forwards subprocess calls with in
 ## Exit criteria
 
 - [x] Subprocess execution preserves command arguments and propagates child exit codes without requiring `--`.
-- [ ] Pure POSIX shell bootstrap script unpacks and activates toolchain environments using standard UNIX utilities.
+- [x] Pure POSIX shell bootstrap script unpacks and activates toolchain environments using standard UNIX utilities.
 
 ## Status
 
-**In Progress**. CLI execution (`ISO-10`) is complete; shell bootstrap template (`ISO-11`) is queued.
+**Complete**. CLI execution (`ISO-10`) and the portable shell bootstrap template (`ISO-11`) are implemented and tested.
 
 ## Tasks
 

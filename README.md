@@ -34,8 +34,9 @@ isolock exec cargo build --release
 isolock exec pixi run test
 isolock exec npm test
 
-# Bootstrap an isolated environment on an air-gapped host using pure POSIX shell
-sh bootstrap.sh
+# Restore an initialized airlock environment with pure POSIX shell
+sh .isolock/bootstrap.sh
+. .isolock/state/active/activate
 ```
 
 ## Develop

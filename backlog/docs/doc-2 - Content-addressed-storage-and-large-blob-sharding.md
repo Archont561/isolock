@@ -15,11 +15,13 @@ Git repositories and standard Git hosting services enforce file size limits (typ
 ### Architectural Solution
 
 1. **Deterministic Sharded Path Hierarchy**:
-   Every artifact is stored at:
+   Every artifact is stored below a path derived from its SHA-256 digest:
 
    ```text
-   blobs/sha256/<hash[:2]>/<full_hash>/<filename>
+   blobs/sha256/<hash[:2]>/<hash[2:4]>/<full_hash>/<filename>
    ```
+
+   The first two two-character directories shard the digest space; the final directory is the full digest. A local checkout stores this tree under `.isolock/blobs/`, while the orphan storage branch uses `blobs/` at its root.
 
 2. **Size Ceiling (95 MiB)**:
    If an incoming archive exceeds 95 MiB (99,614,720 bytes):
