@@ -13,11 +13,11 @@ Exit condition: `isolock plan --ci` detects lockfile tampering or missing depend
 
 - [x] Lockfile diffing evaluates expected against current dependency artifacts.
 - [x] Unmirrored packages trigger non-zero CI exit codes.
-- [ ] Automated generation of `gh workflow run isolock.yml` dispatch commands.
+- [x] Automated generation of `gh workflow run isolock.yml` dispatch commands.
 
 ## Status
 
-**In Progress**. Drift evaluation (`ISO-8`) is complete; dispatch command synthesis (`ISO-9`) is in progress.
+**Complete**. Drift evaluation (`ISO-8`) and workflow dispatch command synthesis (`ISO-9`) are complete.
 
 ## Tasks
 
