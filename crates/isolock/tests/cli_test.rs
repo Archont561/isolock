@@ -173,6 +173,42 @@ fn test_cli_subcommands() {
     assert!(ingest_out.status.success());
 }
 
+#[test]
+fn pull_request_workflow_skips_drift_audit_without_storage_ref() {
+    let workflow: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../../../.github/workflows/isolock.yml"))
+            .expect("workflow yaml parses");
+    let pull_request_paths = workflow["on"]["pull_request"]["paths"]
+        .as_sequence()
+        .expect("pull request workflow has a path filter");
+    assert!(pull_request_paths
+        .iter()
+        .any(|path| { path.as_str() == Some(".github/workflows/isolock.yml") }));
+
+    let steps = workflow["jobs"]["plan-guard"]["steps"]
+        .as_sequence()
+        .expect("plan guard has workflow steps");
+    let storage_step = steps
+        .iter()
+        .find(|step| step["id"].as_str() == Some("airlock-storage"))
+        .expect("plan guard checks whether storage is initialized");
+    let storage_script = storage_step["run"]
+        .as_str()
+        .expect("storage check runs a shell script");
+    assert!(storage_script.contains("refs/heads/isolock/v1"));
+    assert!(storage_script.contains("refs/tags/isolock/v1"));
+    assert!(storage_script.contains("available=false"));
+
+    let audit_step = steps
+        .iter()
+        .find(|step| step["name"].as_str() == Some("Run Isolock Hermeticity Audit"))
+        .expect("plan guard has an audit step");
+    assert_eq!(
+        audit_step["if"].as_str(),
+        Some("steps.airlock-storage.outputs.available == 'true'")
+    );
+}
+
 fn assert_dispatch_command_matches_inputs<'a>(command: &'a str, options: &[&str]) -> &'a str {
     let fields = command
         .strip_prefix("gh workflow run isolock.yml -f registry=")

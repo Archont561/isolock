@@ -3,6 +3,7 @@ name: Isolock Airlock Guard & Ingestion
 on:
   pull_request:
     paths:
+      - ".github/workflows/isolock.yml"
       - "Cargo.lock"
       - "Cargo.toml"
       - "pixi.lock"
@@ -49,11 +50,24 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Fetch Isolock Orphan Branch
+      - name: Check for Isolock Storage Ref
+        id: airlock-storage
         run: |
-          git fetch origin isolock/v1:refs/remotes/origin/isolock/v1 --depth=1 || true
+          branch_ref="$(git ls-remote --heads origin refs/heads/isolock/v1)"
+          tag_ref="$(git ls-remote --tags origin refs/tags/isolock/v1)"
+          if [ -n "$branch_ref" ]; then
+            git fetch origin refs/heads/isolock/v1:refs/remotes/origin/isolock/v1 --depth=1
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$tag_ref" ]; then
+            git fetch origin refs/tags/isolock/v1:refs/tags/isolock/v1 --depth=1
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No isolock/v1 storage ref exists; skipping the Airlock drift audit until storage is initialized."
+          fi
 
       - name: Run Isolock Hermeticity Audit
+        if: steps.airlock-storage.outputs.available == 'true'
         run: |
           echo "Auditing lockfile dependencies against airlock CAS..."
           # isolock plan outputs 'gh workflow run isolock.yml' when dependencies are missing
