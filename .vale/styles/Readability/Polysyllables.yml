@@ -35,4 +35,3 @@ script: |
       matches = append(matches, {begin: m[0].begin, end: m[0].end})
     }
   }
-
