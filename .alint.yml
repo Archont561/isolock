@@ -1,0 +1,135 @@
+# yaml-language-server: $schema=https://alint.org/_alint/configuration/schema.json
+version: 1
+
+extends:
+  - alint://bundled/hygiene/no-tracked-artifacts@v1
+  - alint://bundled/hygiene/lockfiles@v1
+  - alint://bundled/agent-hygiene@v1
+  - alint://bundled/rust@v1
+  - alint://bundled/monorepo/cargo-workspace@v1
+  - alint://bundled/ci/github-actions@v1
+
+rules:
+  - id: lockfiles-no-nested-bun
+    level: off
+
+  - id: require-root-files
+    kind: file_exists
+    paths:
+      - LICENSE
+      - README.md
+      - AGENTS.md
+      - Cargo.toml
+      - Cargo.lock
+      - clippy.toml
+      - deny.toml
+      - pixi.toml
+      - lefthook.yml
+      - .gitignore
+    level: error
+    message: "Required repository root file is missing."
+
+  - id: require-policy-schemas
+    kind: dir_contains
+    select: .alint/schemas
+    require:
+      - rust-workspace-cargo.schema.json
+      - rust-crate-cargo.schema.json
+      - github-workflow-hardening.schema.json
+      - lefthook-config.schema.json
+    level: error
+    message: "All repository policy JSON schemas must exist under .alint/schemas/."
+
+  - id: require-doc-templates
+    kind: dir_contains
+    select: templates
+    require:
+      - README.md.j2
+      - AGENTS.md.j2
+      - crate-readme.md.j2
+      - build-report.md.j2
+    level: error
+    message: "Jinja2 documentation templates must exist under templates/."
+
+  - id: require-rust-crate-layout
+    kind: dir_contains
+    select: "crates/*"
+    require:
+      - Cargo.toml
+      - README.md
+      - src
+    level: error
+    message: "Every Rust crate must contain Cargo.toml, README.md, and src/."
+
+  - id: require-vale-microsoft-preset
+    kind: dir_contains
+    select: .vale/styles/Microsoft
+    require:
+      - meta.json
+      - "*.yml"
+    level: error
+    message: "The Microsoft Vale prose preset must be synced under .vale/styles/Microsoft/ for offline linting."
+
+  - id: require-vale-inclusive-preset
+    kind: dir_contains
+    select: .vale/styles/alex
+    require:
+      - meta.json
+      - LICENSE
+      - "*.yml"
+    level: error
+    message: "The alex inclusive-language preset and its license must stay vendored under .vale/styles/alex/."
+
+  - id: require-vale-house-style
+    kind: dir_contains
+    select: .vale/styles/Polyglot
+    require:
+      - "*.yml"
+    level: error
+    message: "The house Vale style must keep at least one rule under .vale/styles/Polyglot/."
+
+  - id: forbid-committed-build-artifacts
+    kind: dir_absent
+    paths:
+      - coverage
+      - "**/target"
+      - docs/out
+      - docs/.next
+    level: error
+    message: "Generated coverage reports and target build artifacts must not be committed."
+
+  - id: schema-rust-workspace-cargo
+    kind: json_schema_passes
+    paths: Cargo.toml
+    format: toml
+    schema_path: .alint/schemas/rust-workspace-cargo.schema.json
+    level: error
+    message: "Root Cargo.toml must satisfy .alint/schemas/rust-workspace-cargo.schema.json."
+
+  - id: schema-rust-crate-cargo
+    kind: json_schema_passes
+    paths: "crates/*/Cargo.toml"
+    format: toml
+    schema_path: .alint/schemas/rust-crate-cargo.schema.json
+    level: error
+    message: "Every Rust crate Cargo.toml must inherit version, edition, rust-version, license, and lints from the workspace."
+
+  - id: schema-lefthook-config
+    kind: json_schema_passes
+    paths: lefthook.yml
+    format: yaml
+    schema_path: .alint/schemas/lefthook-config.schema.json
+    level: error
+    message: "lefthook.yml must define commit-msg, pre-commit, and pre-push hooks."
+
+  - id: max-one-line-comment-configs
+    kind: file_content_forbidden
+    paths:
+      - "**/*.toml"
+      - "**/*.yml"
+      - "**/*.yaml"
+      - "**/*.ini"
+      - "!**/.vale/**"
+    pattern: '(?m)^\s*[#;].*\r?\n\s*[#;]'
+    level: error
+    message: "Comments in TOML, YAML, and INI configuration files must be at most one line."

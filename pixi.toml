@@ -1,0 +1,23 @@
+[workspace]
+name = "isolock"
+version = "0.1.0"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+rust = ">=1.88.0"
+cargo-nextest = ">=0.9.150,<0.10"
+cargo-llvm-cov = ">=0.9.1,<0.10"
+
+[activation.env]
+LLVM_COV = "$CONDA_PREFIX/bin/llvm-cov"
+LLVM_PROFDATA = "$CONDA_PREFIX/bin/llvm-profdata"
+
+[tasks]
+build = "cargo build --workspace"
+test = "cargo test --workspace --all-features"
+nextest = "cargo nextest run --workspace --all-features"
+coverage = "cargo llvm-cov --workspace --all-features --lcov --output-path coverage/lcov.info"
+coverage-summary = "cargo llvm-cov --workspace --all-features --text"
+build-conda = "rattler-build build --recipe crates/isolock/recipe.yaml --output-dir dist/conda"
+publish-conda = "rattler-build upload prefix --channel archont561/archont561 --generate-attestation --store-github-attestation --skip-existing dist/conda/**/*.conda"
