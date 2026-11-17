@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://isolock.local/schemas/lefthook-config.schema.json",
+  "title": "Lefthook Git Hooks Configuration Policy",
+  "type": "object",
+  "required": ["commit-msg", "pre-commit", "pre-push"],
+  "properties": {
+    "commit-msg": { "type": "object" },
+    "pre-commit": { "type": "object" },
+    "pre-push": { "type": "object" }
+  }
+}

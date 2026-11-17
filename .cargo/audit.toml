@@ -1,0 +1,5 @@
+# cargo-audit configuration (RustSec advisories)
+
+[advisories]
+# RUSTSEC-2026-0374: basic-toml is unmaintained (transitively required by rstest-bdd).
+ignore = ["RUSTSEC-2026-0374"]

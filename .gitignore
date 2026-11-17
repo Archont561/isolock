@@ -1,0 +1,12 @@
+/target
+coverage/
+.pixi/
+.isolock/
+output/
+*.conda
+docs/out/
+docs/.next/
+docs/node_modules/
+docs/.source/
+
+

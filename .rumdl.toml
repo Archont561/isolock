@@ -1,0 +1,35 @@
+# rumdl — fast Rust Markdown linter/formatter.
+
+[global]
+flavor = "gfm"
+line-length = 100
+respect-gitignore = true
+cache = true
+cache-dir = ".rumdl_cache"
+exclude = [
+  ".pixi/**",
+  "coverage/**",
+  "target/**",
+  ".isolock/**",
+  ".vale/**",
+  "**/node_modules/**",
+  "docs/.next/**",
+  "docs/.source/**",
+  "docs/out/**",
+  "backlog/tasks/**",
+]
+disable = [
+  "MD013", # Allow flexible prose and wide tables
+]
+
+[per-file-flavor]
+"docs/content/**/*.mdx" = "mdx"
+
+[MD004]
+style = "dash"
+
+[MD049]
+style = "asterisk"
+
+[MD050]
+style = "asterisk"

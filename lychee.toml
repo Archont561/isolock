@@ -1,0 +1,28 @@
+# lychee link checker configuration.
+
+verbose = "warn"
+no_progress = true
+cache = false
+include_verbatim = false
+include_fragments = "full"
+format = "compact"
+extensions = ["md", "mdx", "html"]
+
+exclude_path = [
+  "(^|/)\\.pixi/",
+  "(^|/)node_modules/",
+  "(^|/)coverage/",
+  "(^|/)target/",
+  "(^|/)dist/",
+  "(^|/)\\.isolock/",
+  "(^|/)\\.git/",
+  "(^|/)\\.next/",
+  "(^|/)\\.source/",
+  "(^|/)docs/out/",
+]
+
+exclude = [
+  '^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?(/|$)',
+  '^https://github\.com/Archont561/isolock',
+  '^https://archont561\.github\.io/isolock',
+]
