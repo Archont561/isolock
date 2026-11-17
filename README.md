@@ -41,6 +41,8 @@ sh bootstrap.sh
 ## Develop
 
 ```sh
+pixi install                      # Rust tooling and the Lefthook binary
+pixi run install-hooks            # install this clone's configured Git hooks
 cargo nextest run --workspace     # fast unit and integration tests
 cargo test --workspace            # BDD scenarios and property tests
 alint                             # repository policy and schema hygiene
