@@ -11,6 +11,8 @@ repository.workspace = true
 [dependencies]
 isolock-core.workspace = true
 isolock-cas.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

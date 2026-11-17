@@ -1,4 +1,5 @@
 /target
+/.pixi-sandbox/
 coverage/
 .pixi/
 .isolock/

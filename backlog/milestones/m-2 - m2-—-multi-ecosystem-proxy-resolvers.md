@@ -12,13 +12,13 @@ Exit condition: Native tools resolve and install dependencies hermetically from 
 ## Exit criteria
 
 - [x] Proxy listener binds to loopback with configurable fail-closed airlock policies.
-- [ ] PyPI PEP 691 JSON Simple Index (zero HTML) and wheel delivery endpoints are functional.
-- [ ] Conda `repodata.json` generation and archive downloads succeed.
-- [ ] NPM packuments with SHA-512 integrity and Cargo RFC 2789 sparse registry are served.
+- [x] PyPI PEP 691 JSON Simple Index (zero HTML) and wheel delivery endpoints are functional.
+- [x] Conda `repodata.json` generation and archive downloads succeed.
+- [x] NPM packuments with SHA-512 integrity and Cargo RFC 2789 sparse registry are served.
 
 ## Status
 
-**In Progress**. Routing decision core (`ISO-5`) is complete; protocol endpoint synthesizers (`ISO-6`, `ISO-7`) are queued.
+**Complete**. Listener, protocol adapters, CLI input loading, and native-tool end-to-end checks are complete. Verified with pip, Pixi, npm, and Cargo using local-only package fixtures.
 
 ## Tasks
 

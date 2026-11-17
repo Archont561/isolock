@@ -1277,6 +1277,8 @@ dependencies = [
  "isolock-core",
  "isolock-plan",
  "isolock-proxy",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -1314,12 +1316,15 @@ dependencies = [
  "rstest",
  "rstest-bdd",
  "rstest-bdd-macros",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "isolock-proxy"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "brotli",
  "isolock-cas",
  "isolock-core",
@@ -1331,7 +1336,9 @@ dependencies = [
  "rstest-bdd-macros",
  "serde",
  "serde_json",
+ "sha2",
  "tame-index",
+ "toml",
 ]
 
 [[package]]
