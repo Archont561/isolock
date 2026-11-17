@@ -1,0 +1,22 @@
+---
+title: Welcome to Isolock
+description: Hermetic dependency airlock engine and local proxy manager.
+---
+
+## Hello World
+
+Welcome to the **Isolock** documentation site built with [Fumadocs](https://fumadocs.dev).
+
+Isolock is a deterministic, content-addressable dependency airlock system designed for reproducible builds, compliance auditing, and secure software supply chains across multi-language repositories.
+
+## Quick Links
+
+- **[Getting Started](./getting-started.mdx)**: Install Isolock, plan lockfiles, and run in airlock mode.
+- **[Architecture Overview](./architecture.mdx)**: Learn about `isolock-core`, `isolock-cas`, `isolock-plan`, and `isolock-proxy`.
+
+## Core Features
+
+- **Multi-Ecosystem Interception**: Transparent proxy routing for Conda, PyPI, npm, and Cargo.
+- **Fail-Closed Hermeticity**: Enforces zero external network leaks in CI and sealed workstations.
+- **Content-Addressable Storage (CAS)**: SHA-256 sharded storage engine caching verified upstream artifacts.
+- **Lockfile Drift Guard**: Detects tampered, missing, or mismatched package digests before deployment.

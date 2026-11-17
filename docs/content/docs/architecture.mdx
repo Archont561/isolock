@@ -1,0 +1,23 @@
+---
+title: Architecture Overview
+description: Modular structure and domain contracts of Isolock.
+---
+
+## Modular Crates Structure
+
+Isolock is organized as a Cargo workspace with four domain library crates and one CLI binary:
+
+```text
+crates/
+├── isolock-core/   # Shared primitives, versioning, semver, and registry taxonomy
+├── isolock-cas/    # Content Addressable Storage (CAS) and SHA-256 validation
+├── isolock-plan/   # Airlock execution plan, lockfile diffs, and drift guards
+├── isolock-proxy/  # Local HTTP interceptor proxy and fail-closed routing
+└── isolock/        # User-facing CLI application binary
+```
+
+## Security Invariants
+
+1. **Zero Network Leakage**: In `Ci` and `LocalAirlock` operational modes, un-cached dependency requests result in an immediate fail-closed airlock violation.
+2. **Deterministic Digests**: Every artifact stored in CAS is verified against lowercase 64-hex SHA-256 hashes.
+3. **Drift Immunity**: Plan verification compares expected against current lockfiles to prevent stealth dependency tampering.
