@@ -14,6 +14,7 @@ This document governs agent-assisted development in `isolock`.
 3. **No Tracked Blobs on `main`**: Binary blobs (`.conda`, `.tar.bz2`, `.whl`, `.tgz`, `.crate`) must never be committed to `main`.
 4. **Behavior Contracts**: User-facing promises must have an accompanying BDD scenario in `features/*.feature` with `rstest-bdd` step bindings.
 5. **No Network in CI**: Tests must run hermetically with `--offline`.
+6. **Pixi Inaccessibility Fallback**: Whenever `pixi` is inaccessible, missing from `PATH`, or fails in an unprovisioned environment, agents must run `bash scripts/restore.sh` to restore the locked developer sandbox.
 
 ## Verification Commands
 
