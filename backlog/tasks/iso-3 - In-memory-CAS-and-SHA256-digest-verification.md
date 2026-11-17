@@ -21,7 +21,7 @@ Implement Content-Addressed Storage types, lowercase 64-hex SHA-256 digest valid
 
 <!-- AC:BEGIN -->
 - [x] #1 `Sha256Digest::parse` validates exact 64-character lowercase hex strings.
-- [x] #2 `InMemoryCas` provides `insert`, `get`, `contains`, and `count` operations.
+- [x] #2 `InMemoryCas::insert` verifies content against the supplied digest and provides `get`, `contains`, and `count` operations.
 - [x] #3 BDD scenario tests and property tests pass in `isolock-cas`.
 <!-- AC:END -->
 

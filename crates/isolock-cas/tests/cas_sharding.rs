@@ -272,8 +272,8 @@ fn files_equal(left_path: &Path, right_path: &Path) -> io::Result<bool> {
     let mut left_buffer = [0_u8; 64 * 1024];
     let mut right_buffer = [0_u8; 64 * 1024];
     loop {
-        let left_length = left.read(&mut left_buffer)?;
-        let right_length = right.read(&mut right_buffer)?;
+        let left_length = read_block(&mut left, &mut left_buffer)?;
+        let right_length = read_block(&mut right, &mut right_buffer)?;
         if left_length != right_length || left_buffer[..left_length] != right_buffer[..right_length]
         {
             return Ok(false);
@@ -282,6 +282,18 @@ fn files_equal(left_path: &Path, right_path: &Path) -> io::Result<bool> {
             return Ok(true);
         }
     }
+}
+
+fn read_block(reader: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        let read = reader.read(&mut buffer[filled..])?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    Ok(filled)
 }
 
 #[test]

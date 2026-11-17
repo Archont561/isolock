@@ -257,92 +257,15 @@ pub fn shard_file(
 
     let shards_directory = shards_directory.as_ref();
     fs::create_dir_all(shards_directory)?;
-    let count = chunk_count(original_size_bytes, SHARD_SIZE_BYTES);
     let mut created_files = Vec::new();
-
-    let result = (|| {
-        let mut chunks = Vec::new();
-        let mut original_hasher = Sha256::new();
-        let mut total_read = 0_u64;
-
-        for index in 0..count {
-            let chunk_size = (original_size_bytes - total_read).min(SHARD_SIZE_BYTES);
-            let filename = part_filename(&original_filename, index, count);
-            let path = shards_directory.join(&filename);
-            let mut part_file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)?;
-            created_files.push(path);
-
-            let mut part_hasher = Sha256::new();
-            let mut part_read = 0_u64;
-            let mut buffer = [0_u8; IO_BUFFER_SIZE];
-            while part_read < chunk_size {
-                let read_limit = (chunk_size - part_read).min(buffer.len() as u64) as usize;
-                let read = source.read(&mut buffer[..read_limit])?;
-                if read == 0 {
-                    return Err(CasError::SourceChanged {
-                        path: source_path.to_path_buf(),
-                        expected: original_size_bytes,
-                        actual: total_read,
-                    });
-                }
-                part_file.write_all(&buffer[..read])?;
-                part_hasher.update(&buffer[..read]);
-                original_hasher.update(&buffer[..read]);
-                part_read += read as u64;
-                total_read += read as u64;
-            }
-            part_file.flush()?;
-            part_file.sync_all()?;
-
-            chunks.push(ShardPart {
-                index,
-                part_filename: filename,
-                size_bytes: part_read,
-                sha256: Sha256Digest::from_hash_output(part_hasher.finalize()),
-            });
-        }
-
-        let mut extra_byte = [0_u8; 1];
-        if source.read(&mut extra_byte)? != 0 {
-            return Err(CasError::SourceChanged {
-                path: source_path.to_path_buf(),
-                expected: original_size_bytes,
-                actual: original_size_bytes.saturating_add(1),
-            });
-        }
-        let actual_size = source.metadata()?.len();
-        if actual_size != original_size_bytes {
-            return Err(CasError::SourceChanged {
-                path: source_path.to_path_buf(),
-                expected: original_size_bytes,
-                actual: actual_size,
-            });
-        }
-
-        let manifest = ShardManifest {
-            schema_version: SHARD_MANIFEST_SCHEMA_VERSION,
-            original_filename,
-            original_size_bytes,
-            original_sha256: Sha256Digest::from_hash_output(original_hasher.finalize()),
-            chunk_size_bytes: SHARD_SIZE_BYTES,
-            chunks,
-        };
-        manifest.validate()?;
-
-        let manifest_path = shards_directory.join(manifest.manifest_filename());
-        let mut manifest_file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&manifest_path)?;
-        created_files.push(manifest_path);
-        serde_json::to_writer_pretty(&mut manifest_file, &manifest)?;
-        manifest_file.write_all(b"\n")?;
-        manifest_file.sync_all()?;
-        Ok(manifest)
-    })();
+    let result = write_shard_set(
+        &mut source,
+        source_path,
+        shards_directory,
+        original_filename,
+        original_size_bytes,
+        &mut created_files,
+    );
 
     if result.is_err() {
         for path in created_files.into_iter().rev() {
@@ -350,6 +273,145 @@ pub fn shard_file(
         }
     }
     result.map(Some)
+}
+
+struct ShardWriteContext<'a> {
+    source: &'a mut File,
+    source_path: &'a Path,
+    original_size_bytes: u64,
+    total_read: u64,
+    original_hasher: Sha256,
+    created_files: &'a mut Vec<PathBuf>,
+}
+
+fn write_shard_set(
+    source: &mut File,
+    source_path: &Path,
+    shards_directory: &Path,
+    original_filename: String,
+    original_size_bytes: u64,
+    created_files: &mut Vec<PathBuf>,
+) -> Result<ShardManifest, CasError> {
+    let mut context = ShardWriteContext {
+        source,
+        source_path,
+        original_size_bytes,
+        total_read: 0,
+        original_hasher: Sha256::new(),
+        created_files,
+    };
+    let count = chunk_count(original_size_bytes, SHARD_SIZE_BYTES);
+    let mut chunks = Vec::new();
+
+    for index in 0..count {
+        let chunk_size = (original_size_bytes - context.total_read).min(SHARD_SIZE_BYTES);
+        let filename = part_filename(&original_filename, index, count);
+        chunks.push(write_shard_part(
+            &mut context,
+            shards_directory,
+            index,
+            filename,
+            chunk_size,
+        )?);
+    }
+
+    verify_source_unchanged(context.source, context.source_path, original_size_bytes)?;
+    let manifest = ShardManifest {
+        schema_version: SHARD_MANIFEST_SCHEMA_VERSION,
+        original_filename,
+        original_size_bytes,
+        original_sha256: Sha256Digest::from_hash_output(context.original_hasher.finalize()),
+        chunk_size_bytes: SHARD_SIZE_BYTES,
+        chunks,
+    };
+    manifest.validate()?;
+    write_manifest(shards_directory, &manifest, context.created_files)?;
+    Ok(manifest)
+}
+
+fn write_shard_part(
+    context: &mut ShardWriteContext<'_>,
+    shards_directory: &Path,
+    index: u64,
+    filename: String,
+    chunk_size: u64,
+) -> Result<ShardPart, CasError> {
+    let path = shards_directory.join(&filename);
+    let mut part_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    context.created_files.push(path);
+
+    let mut part_hasher = Sha256::new();
+    let mut part_read = 0_u64;
+    let mut buffer = [0_u8; IO_BUFFER_SIZE];
+    while part_read < chunk_size {
+        let read_limit = (chunk_size - part_read).min(buffer.len() as u64) as usize;
+        let read = context.source.read(&mut buffer[..read_limit])?;
+        if read == 0 {
+            return Err(CasError::SourceChanged {
+                path: context.source_path.to_path_buf(),
+                expected: context.original_size_bytes,
+                actual: context.total_read,
+            });
+        }
+        part_file.write_all(&buffer[..read])?;
+        part_hasher.update(&buffer[..read]);
+        context.original_hasher.update(&buffer[..read]);
+        part_read += read as u64;
+        context.total_read += read as u64;
+    }
+    part_file.flush()?;
+    part_file.sync_all()?;
+
+    Ok(ShardPart {
+        index,
+        part_filename: filename,
+        size_bytes: part_read,
+        sha256: Sha256Digest::from_hash_output(part_hasher.finalize()),
+    })
+}
+
+fn verify_source_unchanged(
+    source: &mut File,
+    source_path: &Path,
+    expected_size: u64,
+) -> Result<(), CasError> {
+    let mut extra_byte = [0_u8; 1];
+    if source.read(&mut extra_byte)? != 0 {
+        return Err(CasError::SourceChanged {
+            path: source_path.to_path_buf(),
+            expected: expected_size,
+            actual: expected_size.saturating_add(1),
+        });
+    }
+    let actual_size = source.metadata()?.len();
+    if actual_size != expected_size {
+        return Err(CasError::SourceChanged {
+            path: source_path.to_path_buf(),
+            expected: expected_size,
+            actual: actual_size,
+        });
+    }
+    Ok(())
+}
+
+fn write_manifest(
+    shards_directory: &Path,
+    manifest: &ShardManifest,
+    created_files: &mut Vec<PathBuf>,
+) -> Result<(), CasError> {
+    let path = shards_directory.join(manifest.manifest_filename());
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    created_files.push(path);
+    serde_json::to_writer_pretty(&mut file, manifest)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
 }
 
 /// Reads and validates a shard manifest from JSON.
@@ -447,12 +509,7 @@ fn hash_part<R: Read>(
 }
 
 fn chunk_count(total_size: u64, chunk_size: u64) -> u64 {
-    let quotient = total_size / chunk_size;
-    if total_size % chunk_size == 0 {
-        quotient
-    } else {
-        quotient + 1
-    }
+    total_size.div_ceil(chunk_size)
 }
 
 fn part_filename(original_filename: &str, index: u64, part_count: u64) -> String {
