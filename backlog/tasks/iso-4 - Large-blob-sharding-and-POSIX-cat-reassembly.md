@@ -1,7 +1,7 @@
 ---
 id: ISO-4
 title: Large blob sharding and POSIX cat reassembly
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-17 11:00'
 labels: []
@@ -22,7 +22,7 @@ Extend `isolock-cas` to partition binary blobs exceeding 95 MiB into sequential 
 <!-- AC:BEGIN -->
 - [x] #1 Artifacts exceeding 95 MiB are chunked into `.part000`, `.part001`, …
 - [x] #2 Manifest records part digests and total uncompressed size.
-- [ ] #3 Sequential concatenation reassembles exact byte payload and passes SHA-256 check.
+- [x] #3 Sequential concatenation reassembles exact byte payload and passes SHA-256 check.
 <!-- AC:END -->
 
 ## Notes
