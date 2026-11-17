@@ -52,7 +52,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@4a29a1b913840e4fbe61d6706f9be2f5c18e95c1 # stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
