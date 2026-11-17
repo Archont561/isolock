@@ -1,0 +1,91 @@
+name: Isolock Airlock Guard & Ingestion
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "pixi.lock"
+      - "pixi.toml"
+      - "package.json"
+      - "requirements*.txt"
+      - "isolock.toml"
+  workflow_dispatch:
+    inputs:
+      registry:
+        description: "Target ecosystem registry (conda, pypi, npm, cargo)"
+        required: true
+        default: "cargo"
+        type: choice
+        options:
+          - cargo
+          - conda
+          - pypi
+          - npm
+      packages:
+        description: "Space-separated package specifications (e.g. clifacet==0.3.0 serde==1.0.210)"
+        required: true
+        type: string
+
+concurrency:
+  group: isolock-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan-guard:
+    name: Airlock PR Drift Guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@4dd2f6233215264b3ef308253164923e429712a7 # stable
+        with:
+          toolchain: stable
+
+      - name: Fetch Isolock Orphan Branch
+        run: |
+          git fetch origin isolock/v1:refs/remotes/origin/isolock/v1 --depth=1 || true
+
+      - name: Run Isolock Hermeticity Audit
+        run: |
+          echo "Auditing lockfile dependencies against airlock CAS..."
+          # isolock plan outputs 'gh workflow run isolock.yml' when dependencies are missing
+          cargo run --release --package isolock -- plan --ci
+
+  ingest-dispatch:
+    name: Airlock Package Ingestion
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@4dd2f6233215264b3ef308253164923e429712a7 # stable
+        with:
+          toolchain: stable
+
+      - name: Configure Git Author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Ingest Packages into CAS
+        run: |
+          cargo run --release --package isolock -- ingest --registry "${{ inputs.registry }}" ${{ inputs.packages }}
+
+      - name: Push Incremental Commit to Orphan Branch
+        run: |
+          cargo run --release --package isolock -- push
