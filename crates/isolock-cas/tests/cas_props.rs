@@ -27,12 +27,11 @@ proptest! {
 
     #[test]
     fn inserted_payload_always_roundtrips(
-        hex in "[0-9a-f]{64}",
         payload in proptest::collection::vec(any::<u8>(), 0..1024)
     ) {
-        let digest = Sha256Digest::parse(&hex).unwrap();
+        let digest = Sha256Digest::from_bytes(&payload);
         let mut store = InMemoryCas::new();
-        store.insert(digest.clone(), payload.clone());
+        prop_assert!(store.insert(digest.clone(), payload.clone()).is_ok());
         prop_assert!(store.contains(&digest));
         prop_assert_eq!(store.get(&digest), Some(payload.as_slice()));
     }

@@ -24,14 +24,13 @@ fn given_empty_cas_store(world: &CasWorld) {
 
 #[when("an artifact with a valid SHA-256 digest is stored")]
 fn when_artifact_stored(world: &CasWorld) {
-    let digest =
-        Sha256Digest::parse("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-            .expect("valid sha256");
     let payload = b"hello hermetic airlock".to_vec();
+    let digest = Sha256Digest::from_bytes(&payload);
     world
         .store
         .borrow_mut()
-        .insert(digest.clone(), payload.clone());
+        .insert(digest.clone(), payload.clone())
+        .expect("matching payload digest is accepted");
     *world.last_digest.borrow_mut() = Some(digest);
     *world.last_payload.borrow_mut() = payload;
 }

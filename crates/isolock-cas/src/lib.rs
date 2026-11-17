@@ -1,12 +1,31 @@
 #![forbid(unsafe_code)]
 //! Content Addressable Storage (CAS) primitives and artifact digest verification.
 
+mod sharding;
+
+pub use sharding::{
+    read_shard_manifest, shard_file, verify_shards, CasError, ShardManifest, ShardPart,
+    SHARD_MANIFEST_SCHEMA_VERSION, SHARD_SIZE_BYTES,
+};
+
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 /// A 64-character lowercase hexadecimal SHA-256 digest string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
 pub struct Sha256Digest(String);
+
+impl<'de> Deserialize<'de> for Sha256Digest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl Sha256Digest {
     /// Computes a SHA-256 digest from raw bytes.
@@ -14,8 +33,11 @@ impl Sha256Digest {
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
-        let result = hasher.finalize();
-        Self(hex::encode(result))
+        Self::from_hash_output(hasher.finalize())
+    }
+
+    pub(crate) fn from_hash_output(output: impl AsRef<[u8]>) -> Self {
+        Self(hex::encode(output))
     }
 
     /// Validates and constructs a SHA-256 digest from a hexadecimal string.
@@ -55,8 +77,18 @@ impl InMemoryCas {
         }
     }
 
-    pub fn insert(&mut self, digest: Sha256Digest, content: Vec<u8>) {
+    /// Stores content only when its bytes match the supplied SHA-256 digest.
+    pub fn insert(&mut self, digest: Sha256Digest, content: Vec<u8>) -> Result<(), CasError> {
+        let actual = Sha256Digest::from_bytes(&content);
+        if actual != digest {
+            return Err(CasError::DigestMismatch {
+                artifact: "in-memory CAS entry".into(),
+                expected: digest,
+                actual,
+            });
+        }
         self.entries.insert(digest, content);
+        Ok(())
     }
 
     #[must_use]
@@ -93,9 +125,20 @@ mod tests {
 
         let mut cas = InMemoryCas::new();
         assert!(!cas.contains(&digest));
-        cas.insert(digest.clone(), b"empty_payload".to_vec());
+        cas.insert(digest.clone(), Vec::new())
+            .expect("matching content digest is accepted");
         assert!(cas.contains(&digest));
-        assert_eq!(cas.get(&digest), Some(&b"empty_payload"[..]));
+        assert_eq!(cas.get(&digest), Some(&[][..]));
         assert_eq!(cas.count(), 1);
+    }
+
+    #[test]
+    fn in_memory_cas_rejects_content_with_a_mismatched_digest() {
+        let expected = Sha256Digest::from_bytes(b"expected content");
+        let mut cas = InMemoryCas::new();
+
+        let result = cas.insert(expected, b"different content".to_vec());
+        assert!(matches!(result, Err(CasError::DigestMismatch { .. })));
+        assert_eq!(cas.count(), 0);
     }
 }
