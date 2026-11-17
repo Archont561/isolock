@@ -5,6 +5,7 @@ use isolock_cas::Sha256Digest;
 use isolock_core::Registry;
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A single planned dependency artifact in the airlock manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,23 +140,125 @@ impl PlanDrift {
     }
 }
 
+const WORKFLOW_REGISTRY_OPTIONS: &[&str] = &["cargo", "conda", "pypi", "npm"];
+
+/// Returns the expected artifacts that have no matching registry/name/version in `current`.
+#[must_use]
+pub fn missing_artifacts(expected: &AirlockPlan, current: &AirlockPlan) -> Vec<PlannedArtifact> {
+    expected
+        .artifacts()
+        .iter()
+        .filter(|expected_artifact| {
+            !current.artifacts().iter().any(|current_artifact| {
+                current_artifact.name == expected_artifact.name
+                    && current_artifact.version == expected_artifact.version
+                    && current_artifact.registry == expected_artifact.registry
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+/// Formats registry-grouped GitHub Actions dispatch commands for missing artifacts.
+///
+/// Generated package specifications are restricted to shell-safe characters because the
+/// workflow passes the `packages` input to its ingestion command. Registry names are checked
+/// against the choice values declared by `.github/workflows/isolock.yml`.
+pub fn format_dispatch_commands(missing: &[PlannedArtifact]) -> Result<Vec<String>, String> {
+    let mut grouped: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+
+    for artifact in missing {
+        let registry = artifact.registry.as_str();
+        if !WORKFLOW_REGISTRY_OPTIONS.contains(&registry) {
+            return Err(format!(
+                "registry `{registry}` is not accepted by isolock.yml workflow_dispatch"
+            ));
+        }
+        if !is_safe_package_name(artifact.registry, &artifact.name)
+            || !is_safe_version(&artifact.version)
+        {
+            return Err(format!(
+                "cannot safely pass package `{}=={}` to isolock.yml workflow_dispatch",
+                artifact.name, artifact.version
+            ));
+        }
+
+        grouped
+            .entry(registry)
+            .or_default()
+            .insert(format!("{}=={}", artifact.name, artifact.version));
+    }
+
+    let mut commands = Vec::with_capacity(grouped.len());
+    for registry in WORKFLOW_REGISTRY_OPTIONS {
+        if let Some(packages) = grouped.remove(registry) {
+            if packages.is_empty() {
+                continue;
+            }
+            let packages = packages.into_iter().collect::<Vec<_>>().join(" ");
+            commands.push(format!(
+                "gh workflow run isolock.yml -f registry={registry} -f packages=\"{packages}\""
+            ));
+        }
+    }
+    if let Some((registry, _)) = grouped.into_iter().next() {
+        return Err(format!(
+            "registry `{registry}` is not accepted by isolock.yml workflow_dispatch"
+        ));
+    }
+    Ok(commands)
+}
+
+fn is_safe_package_name(registry: Registry, value: &str) -> bool {
+    if registry == Registry::Npm {
+        if let Some((scope, name)) = value
+            .strip_prefix('@')
+            .and_then(|rest| rest.split_once('/'))
+        {
+            return is_safe_identifier(scope) && is_safe_identifier(name);
+        }
+    }
+    is_safe_identifier(value)
+}
+
+fn is_safe_identifier(value: &str) -> bool {
+    value
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn is_safe_version(value: &str) -> bool {
+    value
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
+}
+
 /// Detects drift between planned target dependencies and existing lockfile artifacts.
 #[must_use]
 pub fn check_plan_drift(expected: &AirlockPlan, current: &AirlockPlan) -> PlanDrift {
-    let mut missing = Vec::new();
+    let missing = missing_artifacts(expected, current)
+        .iter()
+        .map(|artifact| format!("{}@{}", artifact.name, artifact.version))
+        .collect::<Vec<_>>();
     let mut mismatched = Vec::new();
 
     for exp in expected.artifacts() {
-        match current
-            .artifacts()
-            .iter()
-            .find(|a| a.name == exp.name && a.version == exp.version)
-        {
-            None => missing.push(format!("{}@{}", exp.name, exp.version)),
-            Some(curr) if curr.digest != exp.digest => {
+        if let Some(curr) = current.artifacts().iter().find(|artifact| {
+            artifact.name == exp.name
+                && artifact.version == exp.version
+                && artifact.registry == exp.registry
+        }) {
+            if curr.digest != exp.digest {
                 mismatched.push(format!("{}@{} (digest mismatch)", exp.name, exp.version));
             }
-            Some(_) => {}
         }
     }
 
@@ -193,6 +296,72 @@ mod tests {
 
         let drift = check_plan_drift(&plan_a, &plan_b);
         assert!(drift.is_clean());
+    }
+
+    fn test_artifact(name: &str, version: &str, registry: Registry) -> PlannedArtifact {
+        PlannedArtifact {
+            name: name.into(),
+            version: version.into(),
+            registry,
+            digest: Sha256Digest::from_bytes(format!("{name}-{version}").as_bytes()),
+        }
+    }
+
+    #[test]
+    fn drift_matching_includes_the_registry() {
+        let mut expected = AirlockPlan::new();
+        expected.add(test_artifact("numpy", "2.1.0", Registry::Pypi));
+        expected.add(test_artifact("numpy", "2.1.0", Registry::Conda));
+
+        let mut current = AirlockPlan::new();
+        current.add(test_artifact("numpy", "2.1.0", Registry::Conda));
+
+        assert_eq!(
+            missing_artifacts(&expected, &current),
+            vec![test_artifact("numpy", "2.1.0", Registry::Pypi)]
+        );
+        assert_eq!(
+            check_plan_drift(&expected, &current),
+            PlanDrift::DriftDetected {
+                missing: vec!["numpy@2.1.0".into()],
+                mismatched_digests: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn dispatch_commands_group_and_sort_packages_by_registry() {
+        let missing = vec![
+            test_artifact("pydantic", "2.9.2", Registry::Pypi),
+            test_artifact("serde", "1.0.210", Registry::Cargo),
+            test_artifact("fastapi", "0.115.0", Registry::Pypi),
+            test_artifact("fastapi", "0.115.0", Registry::Pypi),
+        ];
+
+        assert_eq!(
+            format_dispatch_commands(&missing).expect("package inputs are safe"),
+            vec![
+                "gh workflow run isolock.yml -f registry=cargo -f packages=\"serde==1.0.210\"",
+                "gh workflow run isolock.yml -f registry=pypi -f packages=\"fastapi==0.115.0 pydantic==2.9.2\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn dispatch_commands_reject_shell_unsafe_package_values() {
+        let missing = vec![test_artifact("fastapi;touch", "0.115.0", Registry::Pypi)];
+        assert!(format_dispatch_commands(&missing)
+            .expect_err("unsafe package values cannot be emitted")
+            .contains("cannot safely pass package"));
+    }
+
+    #[test]
+    fn dispatch_commands_support_scoped_npm_names() {
+        let missing = vec![test_artifact("@types/node", "22.5.5", Registry::Npm)];
+        assert_eq!(
+            format_dispatch_commands(&missing).expect("scoped package input is safe"),
+            vec!["gh workflow run isolock.yml -f registry=npm -f packages=\"@types/node==22.5.5\""]
+        );
     }
 
     #[test]

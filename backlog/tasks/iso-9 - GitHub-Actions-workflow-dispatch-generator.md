@@ -1,7 +1,7 @@
 ---
 id: ISO-9
 title: GitHub Actions workflow dispatch generator
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-17 11:00'
 labels: []
@@ -21,10 +21,11 @@ Format `gh workflow run isolock.yml -f registry=<reg> -f packages="<pkgs>"` disp
 
 <!-- AC:BEGIN -->
 - [x] #1 CLI detects missing artifacts and exits with code 1 under `--ci` flag.
-- [ ] #2 Formats copy-pasteable `gh workflow run` dispatch command grouped by registry.
-- [ ] #3 Validated against GitHub Actions workflow dispatch triggers.
+- [x] #2 Formats copy-pasteable `gh workflow run` dispatch command grouped by registry.
+- [x] #3 Validated against GitHub Actions workflow dispatch triggers.
 <!-- AC:END -->
 
 ## Notes
 
 - Governed by `backlog/features/plan-drift.feature` and architecture document `backlog/docs/doc-5 - Lockfile-plan-drift-and-ci-airlock-guard.md`.
+- 2026-11-17: CLI drift checks now load the airlock plan and CAS, fail closed when no plan is available, and emit safe, deterministic registry-grouped commands; the BDD contract and workflow input contract tests pass.

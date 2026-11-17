@@ -23,6 +23,10 @@ serde_json.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+rstest.workspace = true
+rstest-bdd.workspace = true
+rstest-bdd-macros.workspace = true
+serde_yaml = "0.9.34"
 
 [lints]
 workspace = true

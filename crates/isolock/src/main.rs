@@ -2,7 +2,9 @@ use clifacet::contract::ExitPolicy;
 use clifacet::Failure;
 use isolock_cas::InMemoryCas;
 use isolock_core::{AirlockMode, VERSION};
-use isolock_plan::{check_plan_drift, AirlockPlan};
+use isolock_plan::{
+    check_plan_drift, format_dispatch_commands, missing_artifacts, AirlockPlan, PlanDrift,
+};
 use isolock_proxy::{ProxyConfig, ProxyServer};
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -21,17 +23,79 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub fn run_airlock_plan(
     #[clifacet(long, help = "CI drift guard mode")] ci: bool,
 ) -> Result<String, Failure> {
-    let expected = AirlockPlan::new();
-    let current = AirlockPlan::new();
-    let drift = check_plan_drift(&expected, &current);
-    if drift.is_clean() {
-        Ok(format!(
-            "isolock plan [mode: {}]: lockfile is clean and in-sync with CAS",
-            if ci { "ci" } else { "workstation" }
-        ))
-    } else {
-        Err(Failure::execution("drift detected in lockfile"))
+    let configured_plan = env::var_os("ISOLOCK_PLAN");
+    let plan_path = configured_plan
+        .as_ref()
+        .map_or_else(|| PathBuf::from(".isolock/plan.json"), PathBuf::from);
+    if configured_plan.is_none() && !plan_path.exists() {
+        return Err(Failure::execution(format!(
+            "cannot evaluate lockfile drift: no airlock plan found at {}",
+            plan_path.display()
+        )));
     }
+
+    let (expected, cas) = load_proxy_inputs().map_err(Failure::execution)?;
+    let current = plan_available_in_cas(&expected, &cas);
+    match check_plan_drift(&expected, &current) {
+        PlanDrift::InSync => Ok(format!(
+            "Verdict: ALL DEPENDENCIES SATISFIED\nisolock plan [mode: {}]: lockfile is clean and in-sync with CAS",
+            if ci { "ci" } else { "workstation" }
+        )),
+        drift @ PlanDrift::DriftDetected { .. } => {
+            let missing = missing_artifacts(&expected, &current);
+            let commands = format_dispatch_commands(&missing).map_err(Failure::execution)?;
+            let PlanDrift::DriftDetected {
+                missing: missing_names,
+                mismatched_digests,
+            } = drift
+            else {
+                unreachable!("the drift match arm contains a drift result")
+            };
+            let mut report = format!(
+                "Verdict: DRIFT DETECTED\nPlan mode: {}\n",
+                if ci { "ci" } else { "workstation" }
+            );
+            if !missing_names.is_empty() {
+                report.push_str("Missing packages:\n");
+                for artifact in missing {
+                    report.push_str(&format!(
+                        "- {}=={} ({})\n",
+                        artifact.name,
+                        artifact.version,
+                        artifact.registry.as_str()
+                    ));
+                }
+            }
+            if !mismatched_digests.is_empty() {
+                report.push_str("Mismatched digests:\n");
+                for artifact in mismatched_digests {
+                    report.push_str(&format!("- {artifact}\n"));
+                }
+            }
+            if !commands.is_empty() {
+                report.push_str("Dispatch commands:\n");
+                for command in commands {
+                    report.push_str(&format!("{command}\n"));
+                }
+            }
+            let report = report.trim_end().to_owned();
+            if ci {
+                Err(Failure::execution(report))
+            } else {
+                Ok(report)
+            }
+        }
+    }
+}
+
+fn plan_available_in_cas(expected: &AirlockPlan, cas: &InMemoryCas) -> AirlockPlan {
+    let mut current = AirlockPlan::new();
+    for (artifact, metadata) in expected.artifacts_with_metadata() {
+        if cas.contains(&artifact.digest) {
+            current.add_with_metadata(artifact.clone(), metadata.clone());
+        }
+    }
+    current
 }
 
 pub const EXIT_POLICY: ExitPolicy = ExitPolicy::standard();

@@ -1,9 +1,14 @@
 use isolock_cas::Sha256Digest;
+use isolock_core::Registry;
+use isolock_plan::{AirlockPlan, PlannedArtifact, PlannedArtifactMetadata};
+use rstest::fixture;
+use rstest_bdd_macros::{given, scenario, then, when};
+use std::cell::RefCell;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TemporaryDirectory(PathBuf);
@@ -55,6 +60,21 @@ fn test_cli_version_flag() {
 }
 
 #[test]
+fn plan_fails_closed_when_no_expected_plan_is_available() {
+    let fixture_dir = TemporaryDirectory::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_isolock"))
+        .args(["plan", "--ci"])
+        .current_dir(&fixture_dir.0)
+        .env_remove("ISOLOCK_PLAN")
+        .env_remove("ISOLOCK_CAS_DIR")
+        .output()
+        .expect("runs isolock plan without an airlock plan");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no airlock plan found"));
+}
+
+#[test]
 fn test_cli_default_usage_output() {
     let bin = env!("CARGO_BIN_EXE_isolock");
     let output = Command::new(bin)
@@ -71,14 +91,23 @@ fn test_cli_default_usage_output() {
 fn test_cli_subcommands() {
     let bin = env!("CARGO_BIN_EXE_isolock");
 
+    let fixture_dir = TemporaryDirectory::new();
+    let cas_dir = fixture_dir.0.join("cas");
+    let empty_plan_path = fixture_dir.0.join("empty-plan.json");
+    fs::write(&empty_plan_path, r#"{"artifacts":[]}"#)
+        .expect("writes an explicit empty plan for the clean-plan check");
     let plan_out = Command::new(bin)
         .args(["plan", "--ci"])
+        .current_dir(&fixture_dir.0)
+        .env("ISOLOCK_PLAN", &empty_plan_path)
+        .env("ISOLOCK_CAS_DIR", &cas_dir)
         .output()
         .expect("runs isolock plan --ci");
     assert!(plan_out.status.success());
+    assert!(
+        String::from_utf8_lossy(&plan_out.stdout).contains("Verdict: ALL DEPENDENCIES SATISFIED")
+    );
 
-    let fixture_dir = TemporaryDirectory::new();
-    let cas_dir = fixture_dir.0.join("cas");
     let package_bytes = b"CLI fixture tarball bytes";
     let digest = Sha256Digest::from_bytes(package_bytes);
     let cas_blob = cas_dir.join(digest.sharded_path());
@@ -144,6 +173,106 @@ fn test_cli_subcommands() {
     assert!(ingest_out.status.success());
 }
 
+fn assert_dispatch_command_matches_inputs<'a>(command: &'a str, options: &[&str]) -> &'a str {
+    let fields = command
+        .strip_prefix("gh workflow run isolock.yml -f registry=")
+        .expect("command begins with the workflow and registry field");
+    let (registry, packages_field) = fields
+        .split_once(" -f packages=\"")
+        .expect("command includes the string packages field");
+    assert!(
+        options.contains(&registry),
+        "unknown workflow registry: {registry}"
+    );
+    assert!(packages_field.ends_with('"'), "packages input is quoted");
+    let packages = packages_field
+        .strip_suffix('"')
+        .expect("packages value has a closing quote");
+    assert!(!packages.is_empty());
+    assert!(packages.split_whitespace().all(|package| package
+        .split_once("==")
+        .is_some_and(|(name, version)| { !name.is_empty() && !version.is_empty() })));
+    registry
+}
+
+#[test]
+fn generated_dispatch_arguments_match_workflow_dispatch_inputs() {
+    let fixture_dir = TemporaryDirectory::new();
+    let plan_path = fixture_dir.0.join("plan.json");
+    let cas_dir = fixture_dir.0.join("cas");
+    fs::create_dir_all(&cas_dir).expect("creates an empty CAS fixture");
+
+    let cases = [
+        ("serde", "1.0.210", Registry::Cargo),
+        ("numpy", "2.1.0", Registry::Conda),
+        ("fastapi", "0.115.0", Registry::Pypi),
+        ("fixture", "1.0.0", Registry::Npm),
+    ];
+    let mut plan = AirlockPlan::new();
+    for (name, version, registry) in cases {
+        let bytes = format!("{name}=={version}").into_bytes();
+        plan.add(PlannedArtifact {
+            name: name.into(),
+            version: version.into(),
+            registry,
+            digest: Sha256Digest::from_bytes(&bytes),
+        });
+    }
+    fs::write(
+        &plan_path,
+        serde_json::to_vec(&plan).expect("serializes the registry plan"),
+    )
+    .expect("writes plan fixture");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_isolock"))
+        .args(["plan", "--ci"])
+        .current_dir(&fixture_dir.0)
+        .env("ISOLOCK_PLAN", &plan_path)
+        .env("ISOLOCK_CAS_DIR", &cas_dir)
+        .output()
+        .expect("runs the plan drift command");
+    assert_eq!(output.status.code(), Some(1));
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let workflow: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../../../.github/workflows/isolock.yml"))
+            .expect("workflow yaml parses");
+    let inputs = &workflow["on"]["workflow_dispatch"]["inputs"];
+    let registry_input = &inputs["registry"];
+    assert_eq!(registry_input["type"].as_str(), Some("choice"));
+    assert_eq!(registry_input["required"].as_bool(), Some(true));
+    let options = registry_input["options"]
+        .as_sequence()
+        .expect("registry is a choice input")
+        .iter()
+        .filter_map(serde_yaml::Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(options, ["cargo", "conda", "pypi", "npm"]);
+
+    let packages_input = &inputs["packages"];
+    assert_eq!(packages_input["type"].as_str(), Some("string"));
+    assert_eq!(packages_input["required"].as_bool(), Some(true));
+
+    let commands = report
+        .lines()
+        .filter(|line| line.starts_with("gh workflow run isolock.yml "))
+        .collect::<Vec<_>>();
+    assert_eq!(commands.len(), options.len(), "{report}");
+    let mut generated_registries = std::collections::BTreeSet::new();
+    for command in commands {
+        let registry = assert_dispatch_command_matches_inputs(command, &options);
+        assert!(
+            generated_registries.insert(registry),
+            "registry repeated: {registry}"
+        );
+    }
+    assert_eq!(generated_registries.len(), options.len());
+}
+
 #[cfg(unix)]
 #[test]
 fn exec_injects_local_registry_urls_and_propagates_child_exit_codes() {
@@ -176,4 +305,254 @@ fn exec_injects_local_registry_urls_and_propagates_child_exit_codes() {
         .status()
         .expect("runs the child process");
     assert_eq!(failure.code(), Some(7));
+}
+
+#[derive(Clone)]
+struct PlanPackageFixture {
+    filename: String,
+    artifact: PlannedArtifact,
+    bytes: Vec<u8>,
+}
+
+#[derive(Default)]
+struct PlanDispatchWorld {
+    fixture_dir: RefCell<Option<TemporaryDirectory>>,
+    packages: RefCell<Vec<PlanPackageFixture>>,
+    output: RefCell<Option<Output>>,
+}
+
+#[fixture]
+fn world() -> PlanDispatchWorld {
+    PlanDispatchWorld::default()
+}
+
+fn plan_project_dir(world: &PlanDispatchWorld) -> PathBuf {
+    if let Some(path) = world
+        .fixture_dir
+        .borrow()
+        .as_ref()
+        .map(|fixture| fixture.0.clone())
+    {
+        return path;
+    }
+
+    let fixture = TemporaryDirectory::new();
+    let path = fixture.0.clone();
+    fs::create_dir_all(path.join(".isolock/cas"))
+        .expect("creates the plan and CAS fixture directories");
+    *world.fixture_dir.borrow_mut() = Some(fixture);
+    path
+}
+
+fn write_plan_fixture(world: &PlanDispatchWorld, definitions: Vec<(String, String, Registry)>) {
+    let project = plan_project_dir(world);
+    let mut plan = AirlockPlan::new();
+    let mut packages = Vec::with_capacity(definitions.len());
+    for (name, version, registry) in definitions {
+        let bytes = format!("fixture {} {name}=={version}", registry.as_str()).into_bytes();
+        let digest = Sha256Digest::from_bytes(&bytes);
+        let filename = match registry {
+            Registry::Pypi => format!("{name}-{version}-py3-none-any.whl"),
+            Registry::Conda => format!("{name}-{version}-h123_0.conda"),
+            Registry::Npm => format!("{name}-{version}.tgz"),
+            Registry::Cargo => format!("{name}-{version}.crate"),
+        };
+        let artifact = PlannedArtifact {
+            name,
+            version,
+            registry,
+            digest,
+        };
+        plan.add_with_metadata(
+            artifact.clone(),
+            PlannedArtifactMetadata {
+                filename: Some(filename.clone()),
+                ..PlannedArtifactMetadata::default()
+            },
+        );
+        packages.push(PlanPackageFixture {
+            filename,
+            artifact,
+            bytes,
+        });
+    }
+
+    fs::write(
+        project.join(".isolock/plan.json"),
+        serde_json::to_vec(&plan).expect("serializes fixture airlock plan"),
+    )
+    .expect("writes fixture airlock plan");
+    *world.packages.borrow_mut() = packages;
+}
+
+fn registry_from_name(name: &str) -> Registry {
+    match name {
+        "cargo" => Registry::Cargo,
+        "conda" => Registry::Conda,
+        "pypi" => Registry::Pypi,
+        "npm" => Registry::Npm,
+        _ => panic!("unsupported fixture registry {name:?}"),
+    }
+}
+
+fn package_definitions(requirements: &str) -> Vec<(String, String, Registry)> {
+    requirements
+        .split_whitespace()
+        .map(|specification| {
+            let (name, version) = specification
+                .split_once("==")
+                .unwrap_or_else(|| panic!("requirement is not pinned: {specification:?}"));
+            (name.to_owned(), version.to_owned(), Registry::Pypi)
+        })
+        .collect()
+}
+
+#[given("a project with {filename:string} declaring {requirements:string} and an airlock plan")]
+fn given_project_and_airlock_plan(
+    world: &PlanDispatchWorld,
+    filename: String,
+    requirements: String,
+) {
+    let project = plan_project_dir(world);
+    fs::write(project.join(filename), &requirements).expect("writes requirements fixture");
+    write_plan_fixture(world, package_definitions(&requirements));
+}
+
+#[given("CAS contains {filename:string}")]
+fn given_cas_contains(world: &PlanDispatchWorld, filename: String) {
+    let package = world
+        .packages
+        .borrow()
+        .iter()
+        .find(|package| package.filename == filename)
+        .cloned()
+        .unwrap_or_else(|| panic!("fixture plan does not include {filename:?}"));
+    let blob = plan_project_dir(world)
+        .join(".isolock/cas")
+        .join(package.artifact.digest.sharded_path());
+    fs::create_dir_all(blob.parent().expect("CAS blob has a parent directory"))
+        .expect("creates CAS digest directory");
+    fs::write(blob, package.bytes).expect("writes CAS artifact bytes");
+}
+
+#[given("CAS is empty")]
+fn given_empty_cas(world: &PlanDispatchWorld) {
+    let cas_dir = plan_project_dir(world).join(".isolock/cas");
+    if cas_dir.exists() {
+        fs::remove_dir_all(&cas_dir).expect("removes any fixture CAS contents");
+    }
+    fs::create_dir_all(cas_dir).expect("creates an empty CAS fixture");
+}
+
+#[given("an airlock plan with missing artifacts:")]
+fn given_plan_with_missing_artifacts(world: &PlanDispatchWorld, docstring: String) {
+    let definitions = docstring
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let mut fields = line.split_whitespace();
+            let registry = fields.next().expect("fixture line has a registry");
+            let specification = fields.next().expect("fixture line has a package spec");
+            assert!(fields.next().is_none(), "fixture line has two fields");
+            let (name, version) = specification
+                .split_once("==")
+                .unwrap_or_else(|| panic!("package spec is not pinned: {specification:?}"));
+            (
+                name.to_owned(),
+                version.to_owned(),
+                registry_from_name(registry),
+            )
+        })
+        .collect();
+    write_plan_fixture(world, definitions);
+}
+
+#[when("I run {command:string}")]
+fn when_run_plan(world: &PlanDispatchWorld, command: String) {
+    assert_eq!(command, "isolock plan --ci");
+    let project = plan_project_dir(world);
+    let output = Command::new(env!("CARGO_BIN_EXE_isolock"))
+        .args(["plan", "--ci"])
+        .current_dir(&project)
+        .env("ISOLOCK_PLAN", project.join(".isolock/plan.json"))
+        .env("ISOLOCK_CAS_DIR", project.join(".isolock/cas"))
+        .output()
+        .expect("runs isolock plan --ci");
+    *world.output.borrow_mut() = Some(output);
+}
+
+fn plan_output(world: &PlanDispatchWorld) -> String {
+    let output = world.output.borrow();
+    let output = output.as_ref().expect("plan command has run");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[then("the exit code is {code:u8}")]
+fn then_exit_code_is(world: &PlanDispatchWorld, code: u8) {
+    let status = world
+        .output
+        .borrow()
+        .as_ref()
+        .expect("plan command has run")
+        .status
+        .code();
+    assert_eq!(status, Some(i32::from(code)), "{}", plan_output(world));
+}
+
+#[then("the output reports {expected:string}")]
+fn then_output_reports(world: &PlanDispatchWorld, expected: String) {
+    let output = plan_output(world);
+    assert!(
+        output.contains(&expected),
+        "expected {expected:?} in:\n{output}"
+    );
+}
+
+#[then("the output lists missing packages {first:string} and {second:string}")]
+fn then_output_lists_missing_packages(world: &PlanDispatchWorld, first: String, second: String) {
+    let output = plan_output(world);
+    assert!(output.contains(&first), "expected {first:?} in:\n{output}");
+    assert!(
+        output.contains(&second),
+        "expected {second:?} in:\n{output}"
+    );
+}
+
+#[then("the output formats command:")]
+fn then_output_formats_command(world: &PlanDispatchWorld, docstring: String) {
+    let output = plan_output(world);
+    assert!(
+        output.contains(docstring.trim()),
+        "expected dispatch command {:?} in:\n{output}",
+        docstring.trim()
+    );
+}
+
+#[then("the output formats commands:")]
+fn then_output_formats_commands(world: &PlanDispatchWorld, docstring: String) {
+    let output = plan_output(world);
+    assert!(
+        output.contains(docstring.trim()),
+        "expected dispatch commands {:?} in:\n{output}",
+        docstring.trim()
+    );
+}
+
+#[scenario(path = "../../backlog/features/plan-drift.feature", index = 0)]
+fn bdd_plan_drift_is_clean_when_all_dependencies_exist(world: PlanDispatchWorld) {
+    let _ = world;
+}
+
+#[scenario(path = "../../backlog/features/plan-drift.feature", index = 1)]
+fn bdd_plan_drift_formats_grouped_pypi_command(world: PlanDispatchWorld) {
+    let _ = world;
+}
+
+#[scenario(path = "../../backlog/features/plan-drift.feature", index = 2)]
+fn bdd_plan_drift_groups_commands_by_registry(world: PlanDispatchWorld) {
+    let _ = world;
 }

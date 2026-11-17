@@ -1277,7 +1277,11 @@ dependencies = [
  "isolock-core",
  "isolock-plan",
  "isolock-proxy",
+ "rstest",
+ "rstest-bdd",
+ "rstest-bdd-macros",
  "serde_json",
+ "serde_yaml",
  "toml",
 ]
 
