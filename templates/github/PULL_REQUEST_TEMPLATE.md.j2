@@ -1,0 +1,27 @@
+<!--
+  Generated file — do not edit PULL_REQUEST_TEMPLATE.md by hand.
+  Source template : templates/github/PULL_REQUEST_TEMPLATE.md.j2
+-->
+
+# Pull Request
+
+## Summary
+
+- What changed and why?
+
+## Affected Crates
+
+{% for crate in crates -%}
+- [ ] Rust crate `crates/{{ crate.name }}`
+{% endfor -%}
+- [ ] Tooling, policy, CI, or documentation
+
+## Verification Checklist
+
+- [ ] `cargo nextest run --workspace`
+- [ ] `cargo test --workspace` (rstest-bdd & proptest)
+- [ ] `cargo llvm-cov --workspace --summary-only`
+- [ ] `alint` passes
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] `cargo fmt --check`
+- [ ] `cargo deny check bans licenses sources`

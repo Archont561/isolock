@@ -1,0 +1,13 @@
+# Isolock Build & Airlock Report
+
+- **Version**: `{{ version }}`
+- **Target Branch**: `{{ branch }}`
+- **CAS Blobs**: `{{ blob_count }}`
+- **Commit SHA**: `{{ commit_sha }}`
+
+## Registry Status
+
+- Conda: {{ conda_status | default("Verified") }}
+- PyPI: {{ pypi_status | default("Verified") }}
+- NPM: {{ npm_status | default("Verified") }}
+- Cargo: {{ cargo_status | default("Verified") }}

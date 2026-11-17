@@ -1,0 +1,47 @@
+# Generated from templates/github/ISSUE_TEMPLATE/bug_report.yml.j2
+name: Bug Report
+description: Report a reproducible bug in isolock CLI or resolver.
+title: "[Bug]: "
+labels:
+  - bug
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug in **isolock** (`v{{ version }}`).
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected Area
+      description: Select the crate or component affected.
+      options:
+{% for crate in crates %}
+        - "{{ crate.name }}"
+{% endfor %}
+        - "proxy-resolver"
+        - "ci-workflow"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Clear description of the bug and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal Reproduction
+      description: Exact command or lockfile scenario.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, Rust version.
+      placeholder: "Linux x86_64, Rust {{ rust_version }}"
+    validations:
+      required: true

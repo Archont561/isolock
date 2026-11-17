@@ -1,0 +1,52 @@
+---
+title: Getting Started
+description: Installation and basic usage workflows for Isolock.
+---
+
+## Installation
+
+Install Isolock using your package manager of choice:
+
+### Via Conda / Pixi
+
+```sh
+pixi add isolock --channel conda-forge
+```
+
+Or from source:
+
+```sh
+cargo install --locked --path crates/isolock
+```
+
+## Basic Commands
+
+Verify your installation:
+
+```sh
+isolock --version
+```
+
+### 1. Plan Lockfiles
+
+Generate and check dependency airlock plans:
+
+```sh
+isolock plan --ci
+```
+
+### 2. Start the Local Hermetic Proxy
+
+Run the proxy listener in sealed airlock mode:
+
+```sh
+isolock serve
+```
+
+### 3. Ingest Verified Artifacts
+
+Ingest upstream dependency archives into the local CAS:
+
+```sh
+isolock ingest
+```
