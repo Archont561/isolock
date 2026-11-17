@@ -1,0 +1,21 @@
+[package]
+name = "isolock-core"
+description = "Core primitives, error definitions, and version invariants for Isolock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
+rstest-bdd.workspace = true
+rstest-bdd-macros.workspace = true
+
+[lints]
+workspace = true

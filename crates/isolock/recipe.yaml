@@ -1,0 +1,34 @@
+schema_version: 1
+
+context:
+  name: isolock
+  version: 0.1.0
+
+package:
+  name: ${{ name }}
+  version: ${{ version }}
+
+source:
+  path: ../..
+
+build:
+  number: 0
+  script:
+    - if: unix
+      then: cargo install --no-track --locked --root "${PREFIX}" --path crates/isolock
+      else: cargo install --no-track --locked --root "%PREFIX%" --path crates/isolock
+
+requirements:
+  build:
+    - ${{ compiler('c') }}
+    - rust
+
+tests:
+  - script:
+      - isolock --version
+
+about:
+  summary: Dedicated dependency airlock manager
+  license: MIT OR Apache-2.0
+  homepage: https://github.com/Archont561/isolock
+  repository: https://github.com/Archont561/isolock
