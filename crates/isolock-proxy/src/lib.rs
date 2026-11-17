@@ -1,9 +1,16 @@
 #![forbid(unsafe_code)]
 //! Hermetic interceptor proxy and local registry adapter for Isolock.
 
-use isolock_cas::Sha256Digest;
-use isolock_core::{AirlockMode, Registry};
-use isolock_plan::AirlockPlan;
+mod adapters;
+mod server;
+
+pub use adapters::{
+    CargoAdapter, CondaAdapter, NpmAdapter, PypiAdapter, RegistryAdapter, RegistryContext,
+    RegistryRouteAction,
+};
+pub use server::{ProxyHandle, ProxyServer};
+
+use isolock_core::AirlockMode;
 pub use rattler_conda_types::{ChannelInfo, PackageRecord, RepoData};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -27,6 +34,7 @@ pub struct ProxyConfig {
 }
 
 impl ProxyConfig {
+    /// Creates a configuration. Use port zero to request an OS-assigned port.
     #[must_use]
     pub fn new(bind_host: impl Into<String>, port: u16, mode: AirlockMode) -> Self {
         Self {
@@ -34,6 +42,12 @@ impl ProxyConfig {
             port,
             mode,
         }
+    }
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self::new("127.0.0.1", 0, AirlockMode::LocalAirlock)
     }
 }
 
@@ -61,32 +75,6 @@ pub const fn evaluate_proxy_request(mode: AirlockMode, is_cached: bool) -> Proxy
             }
         }
     }
-}
-
-/// Action synthesized by an ecosystem registry adapter.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RegistryRouteAction {
-    /// Serves an in-memory generated index response (e.g. repodata.json or PEP 691 JSON).
-    ServeIndex {
-        content_type: &'static str,
-        body: Vec<u8>,
-    },
-    /// Directs the proxy to stream an artifact from CAS.
-    DownloadArtifact {
-        digest: Sha256Digest,
-        filename: String,
-    },
-    /// Route or artifact not present in plan/CAS.
-    NotFound,
-}
-
-/// Unified registry adapter contract for intercepting and synthesizing ecosystem index feeds.
-pub trait RegistryAdapter: Send + Sync {
-    /// The package registry ecosystem handled by this adapter.
-    fn ecosystem(&self) -> Registry;
-
-    /// Dispatches an intercepted request path and synthesizes the registry response.
-    fn handle_route(&self, method: &str, path: &str, plan: &AirlockPlan) -> RegistryRouteAction;
 }
 
 /// Compresses a slice of bytes using Brotli compression (default quality level 6).

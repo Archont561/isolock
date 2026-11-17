@@ -1,7 +1,7 @@
 ---
 id: ISO-5
 title: Ephemeral loopback proxy listener and routing
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-17 11:00'
 labels: []
@@ -22,9 +22,9 @@ Implement proxy listener configuration and routing decision evaluation (`evaluat
 <!-- AC:BEGIN -->
 - [x] #1 Routing decision logic distinguishes cached hits from un-cached airlock violations.
 - [x] #2 `LocalAirlock` and `Ci` modes fail closed on cache misses.
-- [ ] #3 TCP listener binds dynamically to `127.0.0.1:<port>` and streams HTTP responses.
+- [x] #3 TCP listener binds dynamically to `127.0.0.1:<port>` and streams HTTP responses.
 <!-- AC:END -->
 
 ## Notes
 
-- 2026-11-17: Proxy decision logic and test suite implemented in `crates/isolock-proxy`. Network listener binding in progress.
+- 2026-11-17: Dynamic loopback listener, HTTP routing, fail-closed cache misses, and wire-level tests implemented and verified.
