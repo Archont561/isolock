@@ -6,5 +6,6 @@ output/
 *.conda
 docs/out/
 docs/.next/
+/node_modules/
 docs/node_modules/
 docs/.source/
