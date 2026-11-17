@@ -50,3 +50,14 @@ Ingest upstream dependency archives into the local CAS:
 ```sh
 isolock ingest
 ```
+
+### 4. Bootstrap and Activate a Toolchain
+
+After placing the bootstrap script at `.isolock/bootstrap.sh` and provisioning the manifest and CAS blobs, restore the default environment and source its activation script:
+
+```sh
+sh .isolock/bootstrap.sh
+. .isolock/state/active/activate
+```
+
+The manifest at `.isolock/environments/active.manifest` lists one lowercase SHA-256 digest and one archive filename per line. Verified archives must unpack a top-level `bin/` directory. To fetch the storage tree from the origin's `isolock/v1` branch, pass `--remote`.
