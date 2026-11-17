@@ -12,12 +12,12 @@ Exit condition: CAS stores and verifies blobs by SHA-256; files exceeding 95 MiB
 ## Exit criteria
 
 - [x] In-memory CAS store validates 64-hex SHA-256 digests and computes sharded directory paths.
-- [ ] Blobs over 95 MiB are chunked into `.part*` sequences with `.shards.json` manifests.
+- [x] Blobs over 95 MiB are chunked into `.part*` sequences with `.shards.json` manifests.
 - [ ] POSIX `cat` reassembly reconstructs exact byte payload and passes SHA-256 verification.
 
 ## Status
 
-**In Progress**. `ISO-3` is complete; `ISO-4` is pending implementation.
+**In Progress**. ISO-4 implementation and behavioral coverage are authored; final verification remains pending.
 
 ## Tasks
 
