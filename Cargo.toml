@@ -24,6 +24,7 @@ isolock-plan = { path = "crates/isolock-plan", version = "=0.1.0" }
 isolock-proxy = { path = "crates/isolock-proxy", version = "=0.1.0" }
 clifacet = "0.5.0"
 clap = { version = "4.6", features = ["derive"] }
+figment = { version = "0.10.19", default-features = false, features = ["toml", "env"] }
 brotli = "9.1"
 sha2 = "0.11"
 hex = "0.4.3"
@@ -33,7 +34,10 @@ tar = "0.4"
 toml = "0.5.11"
 zip = { version = "9.6.1", default-features = false, features = ["deflate"] }
 rattler_conda_types = { version = "0.58.4", default-features = false }
+rattler_lock = { version = "0.34.15", default-features = false }
 tame-index = { version = "0.27.2", default-features = false }
+cargo-lock = "11.1.0"
+chaste = "0.6.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 proptest = "1.12.0"

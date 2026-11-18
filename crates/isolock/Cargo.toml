@@ -19,6 +19,7 @@ isolock-plan.workspace = true
 isolock-proxy.workspace = true
 clifacet.workspace = true
 clap.workspace = true
+figment.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 
