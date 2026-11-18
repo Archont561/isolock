@@ -28,6 +28,7 @@ rstest.workspace = true
 rstest-bdd.workspace = true
 rstest-bdd-macros.workspace = true
 serde_yaml = "0.9.34"
+tempfile = "3.27.0"
 
 [lints]
 workspace = true
