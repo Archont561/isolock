@@ -13,6 +13,7 @@ concurrency:
 permissions:
   contents: read
 
+# Developer tooling is separate from the explicit profile/platform materialization matrix.
 jobs:
   quality:
     name: Code Quality and Security Gates
@@ -21,26 +22,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
-
+      - name: Restore reviewed developer tooling from CAS
+        run: bash scripts/restore.sh
       - name: Check Formatting
-        run: cargo fmt --check
-
+        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo fmt --check
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
-        with:
-          tool: cargo-deny
-
+        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo clippy --workspace --all-targets --offline -- -D warnings
       - name: Supply Chain and License Audit
-        run: cargo deny check bans licenses sources
+        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo deny --offline check bans licenses sources
 
   test-and-coverage:
     name: Hermetic Tests & Line Coverage
@@ -49,32 +38,46 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Rust & Tools
-        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: stable
-          components: llvm-tools-preview
-
-      - name: Install Nextest & LLVM-Cov
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
-        with:
-          tool: cargo-nextest,cargo-llvm-cov
-
+      - name: Restore reviewed developer tooling from CAS
+        run: bash scripts/restore.sh
       - name: Run Nextest Suite
-        run: cargo nextest run --workspace
-
+        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo nextest run --workspace --offline
       - name: Run BDD and Property Tests
-        run: cargo test --workspace
-
+        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo test --workspace --offline
       - name: Generate Code Coverage Report
-        run: |
-          mkdir -p coverage
-          cargo llvm-cov --workspace --all-features --lcov --output-path coverage/lcov.info
-
+        run: .pixi/tools/linux-64/pixi run --as-is --offline sh scripts/coverage.sh
       - name: Upload to Codecov
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         with:
           files: coverage/lcov.info
           flags: rust
           fail_ci_if_error: false
+
+  profile-materialization:
+    name: Offline profile ${{ matrix.profile }} / linux-64
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [rust-pixi, rust-standalone]
+    env:
+      ISOLOCK_TEST_PROFILE: ${{ matrix.profile }}
+      ISOLOCK_TEST_PLATFORM: linux-64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Restore reviewed developer tooling from CAS
+        run: bash scripts/restore.sh
+      - name: Materialize only the selected locked profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ISOLOCK_TEST_PIXI="$PWD/.pixi/tools/linux-64/pixi"
+          export ISOLOCK_TEST_RUST_PREFIX="$PWD/.pixi/envs/default"
+          case "$ISOLOCK_TEST_PROFILE" in
+            rust-pixi) test=real_pixi_restores_the_selected_profile_from_a_cold_offline_cache ;;
+            rust-standalone) test=real_standalone_rust_builds_a_locked_registry_dependency_offline ;;
+            *) exit 2 ;;
+          esac
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline "$test" -- --ignored --nocapture

@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Airlock plan generation, lockfile diffing, and drift detection.
 
+pub mod profile;
+
 use isolock_cas::Sha256Digest;
 use isolock_core::Registry;
 use serde::de::Error as DeError;

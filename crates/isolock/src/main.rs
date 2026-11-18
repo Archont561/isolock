@@ -1,3 +1,9 @@
+mod config;
+mod materialize;
+mod profile_cli;
+mod profile_store;
+mod transport;
+
 use clifacet::contract::ExitPolicy;
 use clifacet::Failure;
 use isolock_cas::InMemoryCas;
@@ -463,6 +469,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    if profile_cli::handles(&args) {
+        return match profile_cli::run(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("isolock: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     match args.first().map(String::as_str) {
         Some("plan") => {
             let is_ci = args.iter().any(|a| a == "--ci");
@@ -489,7 +505,9 @@ fn main() -> ExitCode {
         }
         _ => {
             println!("isolock v{VERSION} - dependency airlock manager");
-            println!("Usage: isolock [exec|sync|plan|ingest|serve] [args...]");
+            println!("Usage: isolock <config|plan|fetch|sync|export|seed-manifest|gc> [args...]");
+            println!("Profiles: --profile NAME --platform PLATFORM (see isolock plan --help)");
+            println!("Legacy proxy commands: exec, serve, ingest");
             ExitCode::SUCCESS
         }
     }

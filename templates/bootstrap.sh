@@ -11,6 +11,7 @@ umask 077
 usage() {
     printf '%s\n' \
         'Usage: sh .isolock/bootstrap.sh [--remote] [environment]' \
+        '       sh .isolock/bootstrap.sh --profile NAME --platform PLATFORM [--remote | --source DIR] [--offline]' \
         '       sh .isolock/bootstrap.sh --help' \
         '' \
         'Restore an environment (default: active) from .isolock/blobs and' \
@@ -22,6 +23,129 @@ fail() {
     printf 'isolock bootstrap: %s\n' "$*" >&2
     exit 1
 }
+
+# Profile mode is a separate, fail-closed seed flow. Legacy archive restoration
+# below remains available for v1 environment manifests.
+profile_bootstrap() {
+    set -eu
+    LC_ALL=C
+    export LC_ALL
+    umask 077
+    fail() { printf 'isolock profile bootstrap: %s\n' "$*" >&2; exit 1; }
+    identifier() { case "$1" in ''|.|..|*[!A-Za-z0-9._-]*) fail 'invalid profile/platform/tool identifier';; esac; }
+    digest_valid() { case "$1" in *[!0123456789abcdef]*) fail 'invalid SHA-256 digest';; esac; [ "${#1}" -eq 64 ] || fail 'invalid SHA-256 length'; }
+    hash_file() {
+        if command -v sha256sum >/dev/null 2>&1; then result=$(sha256sum < "$1");
+        else result=$(shasum -a 256 < "$1"); fi
+        printf '%s\n' "${result%% *}"
+    }
+    verify() { [ "$(hash_file "$2")" = "$1" ] || fail 'SHA-256 verification failed'; }
+    profile='' platform='' source_dir='' remote=0 offline=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --profile|--platform|--source) [ "$#" -ge 2 ] || fail 'option requires a value'; option=$1; shift; case "$option" in --profile) profile=$1;; --platform) platform=$1;; --source) source_dir=$1;; esac;;
+            --remote) remote=1;;
+            --offline) offline=1;;
+            --locked) :;;
+            *) fail 'expected --profile NAME --platform PLATFORM [--source DIRECTORY | --remote] [--offline]';;
+        esac
+        shift
+    done
+    identifier "$profile"; identifier "$platform"
+    [ "$remote" -eq 0 ] || [ "$offline" -eq 0 ] || fail '--remote and --offline are incompatible'
+    case "$(uname -s):$(uname -m)" in
+        Linux:x86_64) host=linux-64;; Linux:aarch64|Linux:arm64) host=linux-aarch64;;
+        Darwin:x86_64) host=osx-64;; Darwin:arm64) host=osx-arm64;; *) fail 'unsupported bootstrap host';;
+    esac
+    [ "$platform" = "$host" ] || fail 'seed platform does not match this host'
+    script_dir=$(dirname "$0")
+    project_root=$(CDPATH='' cd -P "$script_dir/.." && pwd -P) || fail 'cannot locate project root'
+    base=$project_root/.isolock
+    [ -n "$source_dir" ] || source_dir=$base
+    case "$source_dir" in /*) :;; *) source_dir=$project_root/$source_dir;; esac
+    mkdir -p "$base/bin" "$base/plans/objects"
+    work=$base/bin/.bootstrap-profile-$$
+    mkdir "$work" || fail 'cannot create private staging directory'
+    trap 'rm -rf "$work"' 0
+    trap 'exit 1' HUP INT TERM
+    command -v tar >/dev/null 2>&1 || fail 'tar is required'
+    command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || fail 'sha256sum or shasum is required'
+    if [ "$remote" -eq 1 ]; then
+        command -v git >/dev/null 2>&1 || fail 'git is required'
+        printf '%s\n' 'isolock transport: Git fallback fetches a broader snapshot; shallow history is not blob-selective transfer' >&2
+        git -C "$project_root" fetch --depth=1 --no-tags origin refs/heads/isolock/v1 || fail 'cannot fetch isolock/v1'
+        storage_commit=$(git -C "$project_root" rev-parse --verify 'FETCH_HEAD^{commit}') || fail 'cannot resolve storage snapshot'
+    fi
+    read_source() {
+        if [ "$remote" -eq 1 ]; then git -C "$project_root" show "$storage_commit:$1" > "$2" || fail 'selected source object is missing';
+        else cp "$source_dir/$1" "$2" || fail 'selected source object is missing'; fi
+    }
+    # The small reviewed seed manifest normally ships with the project. An explicit
+    # source may provide it on first restore; review that file before executing seeds.
+    seed_manifest=$base/seeds/$profile-$platform.manifest
+    [ -f "$seed_manifest" ] || fail 'reviewed .isolock/seeds/PROFILE-PLATFORM.manifest is required'
+    IFS=' ' read -r kind selected manifest_digest selected_platform manifest_file_digest extra < "$seed_manifest" || fail 'empty seed manifest'
+    [ "$kind" = manifest ] && [ "$selected" = "$profile" ] && [ "$selected_platform" = "$platform" ] && [ "$extra" = - ] || fail 'seed manifest identity mismatch'
+    digest_valid "$manifest_digest"; digest_valid "$manifest_file_digest"
+    # The manifest is fetched and byte-verified BEFORE any seed/payload blob.
+    read_source "plans/objects/$manifest_digest.json" "$work/manifest.json"
+    verify "$manifest_file_digest" "$work/manifest.json"
+    cp "$work/manifest.json" "$base/plans/objects/$manifest_digest.json"
+    cp "$work/manifest.json" "$base/plans/$profile-$platform.lock"
+    isolock_seed=
+    seen=' '
+    while IFS=' ' read -r kind name digest filename entry format extra || [ -n "${kind:-}" ]; do
+        case "${kind:-}" in manifest|'') continue;; seed) :;; *) fail 'unknown seed manifest record';; esac
+        [ -z "${extra:-}" ] || fail 'invalid seed record'
+        identifier "$name"; digest_valid "$digest"
+        case "$name" in isolock|pixi) :;; *) fail 'unsupported seed tool';; esac
+        case "$seen" in *" $name "*) fail 'duplicate seed tool';; esac
+        seen="$seen$name "
+        case "$filename" in ''|.|..|*[!A-Za-z0-9._+-]*) fail 'invalid seed filename';; esac
+        first=$(printf '%.2s' "$digest"); rest=${digest#??}; second=$(printf '%.2s' "$rest")
+        blob=cas/sha256/$first/$second/$digest
+        read_source "$blob" "$work/archive"
+        verify "$digest" "$work/archive"
+        case "$format" in
+            raw) [ "$entry" = - ] || fail 'raw seed entry must be a dash'; executable=$work/archive;;
+            tar|tar-gz)
+                case "$entry" in ''|-|/*|../*|*/../*|*/..|..|*[!A-Za-z0-9/._+-]*) fail 'invalid seed entry';; esac
+                # Never extract links/special nodes or traversal paths, even inside staging.
+                (unset TAR_OPTIONS GZIP; tar -tf "$work/archive") > "$work/names" || fail 'invalid seed archive'
+                while IFS= read -r path; do
+                    while [ "${path#./}" != "$path" ]; do path=${path#./}; done
+                    case "$path" in /*|../*|*/../*|*/..|..|*\\*) fail 'unsafe seed archive path';; esac
+                done < "$work/names"
+                (unset TAR_OPTIONS GZIP; tar -tvf "$work/archive") > "$work/types" || fail 'invalid seed archive'
+                while IFS= read -r type; do case "$type" in -*|d*) :;; *) fail 'seed archives must be link-free regular files';; esac; done < "$work/types"
+                mkdir "$work/extracted"
+                (unset TAR_OPTIONS GZIP; tar -xf "$work/archive" -C "$work/extracted") || fail 'cannot extract seed'
+                executable=$work/extracted/$entry
+                [ -f "$executable" ] && [ ! -L "$executable" ] || fail 'seed entry is not a regular executable';;
+            *) fail 'unsupported seed format';;
+        esac
+        destination=$base/bin/.seeds/$digest/$name
+        mkdir -p "$base/bin/.seeds/$digest"
+        if [ -f "$destination" ]; then
+            [ "$(hash_file "$destination")" = "$(hash_file "$executable")" ] || fail 'provisioned seed was modified'
+        else cp "$executable" "$work/seed"; chmod 755 "$work/seed"; mv "$work/seed" "$destination"; fi
+        chmod 755 "$destination"
+        ln -s "$destination" "$work/launcher"
+        [ ! -d "$base/bin/$name" ] || fail 'refusing to replace a directory with a seed launcher'
+        mv "$work/launcher" "$base/bin/$name"
+        [ "$name" != isolock ] || isolock_seed=$destination
+        rm -rf "$work/extracted"
+    done < "$seed_manifest"
+    [ -n "$isolock_seed" ] || fail 'verified Isolock seed is required; host fallback is forbidden'
+    # Only the verified, version-owned path is executed, never a PATH/Conda tool.
+    cd "$project_root"
+    if [ "$offline" -eq 1 ]; then
+        "$isolock_seed" sync --profile "$profile" --platform "$platform" --locked --offline
+    else
+        "$isolock_seed" sync --profile "$profile" --platform "$platform" --manifest "$manifest_digest" --locked
+    fi
+}
+case " $* " in *" --profile "*) profile_bootstrap "$@"; exit $?;; esac
 
 remote=0
 while [ "$#" -gt 0 ]; do

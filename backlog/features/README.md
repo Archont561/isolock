@@ -16,3 +16,9 @@ Executable Gherkin specifications (`.feature`) defining the behavioral contracts
 | `profiled-environment-materialization.feature` | Profile-scoped Pixi and standalone runtime materialization | `isolock-plan`, `isolock-cas`, `isolock` (CLI), `templates/bootstrap.sh` |
 | `profile-configuration.feature` | Typed project configuration, provenance, and locked override policy | `isolock` (CLI) |
 | `proxy-resource-bounds.feature` | Bounded loopback proxy concurrency and shutdown behavior | `isolock-proxy` |
+
+The profile contracts are executable in `crates/isolock/tests/profile_bdd.rs` and
+`profile_safety.rs`. `profile-transport-and-safety.feature` additionally covers verified
+standalone capabilities, manifest-first transfer, shared-CAS GC, seed archives, and
+credential-free diagnostics. `real_profile.rs` is exercised separately by the explicit
+CI profile/platform matrix using restored tools and no registry downloads.

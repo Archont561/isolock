@@ -1,4 +1,4 @@
 {
   "title": "Isolock Documentation",
-  "pages": ["index", "getting-started", "architecture"]
+  "pages": ["index", "getting-started", "profiles", "architecture"]
 }
