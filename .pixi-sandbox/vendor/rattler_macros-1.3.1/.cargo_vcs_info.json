@@ -1,0 +1,6 @@
+{
+  "git": {
+    "sha1": "c5ea80055e36be54dd95b49b150f64751304dbd0"
+  },
+  "path_in_vcs": "crates/rattler_macros"
+}

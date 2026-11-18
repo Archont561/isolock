@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2024 The Chaste Authors
+# SPDX-License-Identifier: CC0-1.0
+
+[package]
+name = "chaste-yarn"
+description = "Parser for yarn lockfiles"
+edition = "2021"
+keywords = ["lockfile", "yarn"]
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[features]
+default = ["classic", "berry"]
+
+classic = ["dep:globreeks", "dep:walkdir"]
+berry = ["dep:yarn-state", "dep:percent-encoding"]
+
+fuzzing = []
+
+[dependencies]
+chaste-types.workspace = true
+nom.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+yarn-lock-parser.workspace = true
+
+[dependencies.globreeks]
+workspace = true
+optional = true
+
+[dependencies.percent-encoding]
+workspace = true
+optional = true
+
+[dependencies.serde]
+workspace = true
+features = ["derive"]
+
+[dependencies.walkdir]
+workspace = true
+optional = true
+
+[dependencies.yarn-state]
+workspace = true
+optional = true
+
+[dev-dependencies]
+concat-idents.workspace = true

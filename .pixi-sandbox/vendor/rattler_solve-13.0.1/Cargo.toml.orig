@@ -1,0 +1,69 @@
+[package]
+exclude = ["tests/**", "benches/**"]
+name = "rattler_solve"
+version = "13.0.1"
+edition.workspace = true
+authors = ["Bas Zalmstra <zalmstra.bas@gmail.com>"]
+description = "A crate to solve conda environments"
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+readme.workspace = true
+
+[dependencies]
+rattler_conda_types = { workspace = true, default-features = false }
+rattler_digest = { workspace = true, default-features = false }
+hex = { workspace = true }
+libc = { workspace = true, optional = true }
+jiff = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+itertools = { workspace = true }
+tempfile = { workspace = true }
+rattler_libsolv_c = { workspace = true, default-features = false, optional = true }
+resolvo = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+url = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+insta = { workspace = true, features = ["yaml"] }
+jiff = { workspace = true }
+once_cell = { workspace = true }
+# Path-only so `cargo publish` strips it: rattler_cache transitively depends on
+# rattler_solve (via rattler_config), so a versioned dev-dependency would require
+# publishing rattler_cache first, which in turn requires rattler_solve.
+rattler_cache = { path = "../rattler_cache", default-features = false }
+rattler_digest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+rattler_repodata_gateway = { path = "../rattler_repodata_gateway", default-features = false, features = [
+    "sparse",
+] }
+rstest = { workspace = true }
+serde_json = { workspace = true }
+similar-asserts = { workspace = true }
+url = { workspace = true }
+tools = { path = "../tools" }
+
+[features]
+default = ["resolvo"]
+libsolv_c = ["dep:rattler_libsolv_c", "dep:libc"]
+resolvo_diagnostics = ["resolvo?/diagnostics"]
+resolvo = ["dep:resolvo", "dep:futures"]
+
+[[bench]]
+name = "bench"
+harness = false
+
+[[bench]]
+name = "sorting_bench"
+harness = false
+
+[[bench]]
+name = "exclusions_bench"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
