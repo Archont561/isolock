@@ -13,3 +13,6 @@ Executable Gherkin specifications (`.feature`) defining the behavioral contracts
 | `plan-drift.feature` | Lockfile Plan Drift & CI Airlock Guard | `crates/isolock-plan` |
 | `posix-bootstrap.feature` | Pure POSIX Shell Environment Bootstrap | `templates/bootstrap.sh` |
 | `cli-exec.feature` | Ergonomic Subprocess Exec (No `--`) | `crates/isolock` (CLI) |
+| `profiled-environment-materialization.feature` | Profile-scoped Pixi and standalone runtime materialization | `isolock-plan`, `isolock-cas`, `isolock` (CLI), `templates/bootstrap.sh` |
+| `profile-configuration.feature` | Typed project configuration, provenance, and locked override policy | `isolock` (CLI) |
+| `proxy-resource-bounds.feature` | Bounded loopback proxy concurrency and shutdown behavior | `isolock-proxy` |

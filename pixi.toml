@@ -6,36 +6,76 @@ platforms = ["linux-64"]
 # PyPI dependencies below are standalone CLIs and need no Conda/PyPI alias mapping.
 conda-pypi-map = false
 
-[dependencies]
-actionlint = "==1.7.12"
-bun = "==1.4.2"
+[feature.rust.dependencies]
 cargo-audit = "==0.22.1"
 cargo-deny = "==0.20.2"
 cargo-llvm-cov = ">=0.9.1,<0.10"
 cargo-nextest = ">=0.9.150,<0.10"
-convco = "==0.7.2"
-lefthook = "==2.2.2"
-lychee = "==0.24.2"
-python = ">=3.9,<4"
-rattler-build = "==0.72.2"
 rust = ">=1.88.0"
-shellcheck = "==0.11.0"
-vale = "==3.19.0"
 
-[pypi-dependencies]
-alint = "==0.22.1"
-rumdl = "==0.3.4"
-
-[activation.env]
+[feature.rust.activation.env]
 LLVM_COV = "$CONDA_PREFIX/bin/llvm-cov"
 LLVM_PROFDATA = "$CONDA_PREFIX/bin/llvm-profdata"
 
-[tasks]
-install-hooks = "lefthook install"
+[feature.rust.tasks]
 build = "cargo build --workspace"
 test = "cargo test --workspace --all-features"
-nextest = "cargo nextest run --workspace --all-features"
+nextest = "cargo nextest run --workspace"
 coverage = "cargo llvm-cov --workspace --all-features --lcov --output-path coverage/lcov.info"
 coverage-summary = "cargo llvm-cov --workspace --all-features --text"
+
+[feature.python.dependencies]
+python = ">=3.9,<4"
+
+[feature.ts.dependencies]
+bun = "==1.4.2"
+
+[feature.quality.dependencies]
+actionlint = "==1.7.12"
+convco = "==0.7.2"
+lefthook = "==2.2.2"
+lychee = "==0.24.2"
+shellcheck = "==0.11.0"
+vale = "==3.19.0"
+
+[feature.quality.pypi-dependencies]
+alint = "==0.22.1"
+rumdl = "==0.3.4"
+
+[feature.quality.tasks]
+install-hooks = "lefthook install"
+
+[feature.packaging.dependencies]
+rattler-build = "==0.72.2"
+
+[feature.packaging.tasks]
 build-conda = "rattler-build build --recipe crates/isolock/recipe.yaml --output-dir dist/conda"
 publish-conda = "rattler-build upload prefix --channel archont561/archont561 --generate-attestation --store-github-attestation --skip-existing dist/conda/**/*.conda"
+
+[environments.default]
+features = ["rust", "python", "ts", "quality", "packaging"]
+no-default-feature = true
+
+[environments.rust]
+features = ["rust"]
+no-default-feature = true
+
+[environments.python]
+features = ["python"]
+no-default-feature = true
+
+[environments.ts]
+features = ["ts"]
+no-default-feature = true
+
+[environments.quality]
+features = ["python", "quality"]
+no-default-feature = true
+
+[environments.release]
+features = ["rust", "packaging"]
+no-default-feature = true
+
+[environments.ci]
+features = ["rust", "python", "ts", "quality", "packaging"]
+no-default-feature = true
