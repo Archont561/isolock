@@ -1,0 +1,299 @@
+//! Selective directory transport and an explicitly reported full-snapshot Git fallback.
+
+use crate::config::{Storage, Transport};
+use crate::profile_store::{self, Workspace};
+use isolock_cas::{FileStore, Sha256Digest};
+use isolock_plan::profile::{canonical_digest, ProfileManifest, StorageIdentity};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+pub enum Snapshot {
+    Directory(PathBuf),
+    Git { repository: PathBuf, commit: String },
+}
+
+pub fn identity(
+    root: &Path,
+    storage: &Storage,
+    locked: Option<&StorageIdentity>,
+) -> Result<StorageIdentity, String> {
+    if storage.transport == Transport::Directory {
+        if locked.is_some_and(|identity| identity.kind != "directory") {
+            return Err("locked input changed: storage.kind".into());
+        }
+        return Ok(StorageIdentity {
+            reference: Some(storage.reference.clone()),
+            ..StorageIdentity::default()
+        });
+    }
+    let source = storage
+        .source
+        .as_deref()
+        .ok_or("Git transport requires storage.source")?;
+    if let Some(locked) = locked {
+        if locked.kind != "git"
+            || locked.repository.as_deref() != Some(source)
+            || locked.reference.as_deref() != Some(&storage.reference)
+        {
+            return Err("locked input changed: storage.repository or storage.reference".into());
+        }
+        return Ok(locked.clone());
+    }
+    let snapshot = git_snapshot(root, source, &storage.reference)?;
+    let Snapshot::Git { commit, .. } = snapshot else {
+        return Err("Git snapshot was not created".into());
+    };
+    Ok(StorageIdentity {
+        kind: "git".into(),
+        repository: Some(source.into()),
+        reference: Some(storage.reference.clone()),
+        commit: Some(commit),
+    })
+}
+
+pub fn snapshot(
+    root: &Path,
+    storage: &Storage,
+    locked: Option<&StorageIdentity>,
+) -> Result<Snapshot, String> {
+    let source = storage
+        .source
+        .as_deref()
+        .ok_or("no artifact source configured; populate CAS or configure storage.source")?;
+    match storage.transport {
+        Transport::Directory => Ok(Snapshot::Directory(crate::config::absolute(
+            root,
+            Path::new(source),
+        ))),
+        Transport::Git => {
+            let reference = locked
+                .and_then(|identity| identity.commit.as_deref())
+                .unwrap_or(&storage.reference);
+            let snapshot = git_snapshot(root, source, reference)?;
+            if let (Some(expected), Snapshot::Git { commit, .. }) = (
+                locked.and_then(|identity| identity.commit.as_ref()),
+                &snapshot,
+            ) {
+                if expected != commit {
+                    return Err("Git snapshot does not match locked storage commit".into());
+                }
+            }
+            Ok(snapshot)
+        }
+    }
+}
+
+fn git_snapshot(root: &Path, source: &str, reference: &str) -> Result<Snapshot, String> {
+    if source.starts_with('-')
+        || reference.starts_with('-')
+        || reference.contains(['\0', '\n', '\r', ':'])
+    {
+        return Err("invalid Git source or reference".into());
+    }
+    let key = canonical_digest(&source)?;
+    let repository = root.join(".isolock/transport").join(key.as_str());
+    fs::create_dir_all(&repository).map_err(|error| error.to_string())?;
+    git(&repository, &["init", "--bare", "--quiet"])?;
+    eprintln!("isolock transport: Git fallback fetches a broader storage snapshot; profile selection is local, not blob-selective transfer");
+    git(
+        &repository,
+        &[
+            "fetch",
+            "--quiet",
+            "--depth=1",
+            "--no-tags",
+            "--",
+            source,
+            reference,
+        ],
+    )?;
+    let commit = String::from_utf8(git(
+        &repository,
+        &["rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+    )?)
+    .map_err(|_| "Git commit is not UTF-8")?
+    .trim()
+    .to_owned();
+    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("invalid resolved Git commit".into());
+    }
+    Ok(Snapshot::Git { repository, commit })
+}
+
+fn git(repository: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(arguments)
+        .output()
+        .map_err(|_| "cannot start Git transport")?;
+    if !output.status.success() {
+        return Err(
+            "Git transport failed; check the source, reference and repository access".into(),
+        );
+    }
+    Ok(output.stdout)
+}
+
+impl Snapshot {
+    pub fn manifest(&self, digest: &Sha256Digest) -> Result<ProfileManifest, String> {
+        let relative = format!("plans/objects/{}.json", digest.as_str());
+        let bytes = match self {
+            Self::Directory(root) => fs::read(root.join(relative)).map_err(|_| {
+                "selected manifest is not available from the directory source".to_owned()
+            })?,
+            Self::Git { repository, commit } => {
+                git(repository, &["show", &format!("{commit}:{relative}")])?
+            }
+        };
+        profile_store::decode(&bytes, Some(digest))
+    }
+    pub fn copy_blob(&self, workspace: &Workspace, digest: &Sha256Digest) -> Result<bool, String> {
+        if workspace
+            .cas
+            .verified(digest)
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(false);
+        }
+        match self {
+            Self::Directory(root) => {
+                let source = FileStore::new(root.join("cas"));
+                if !source.verified(digest).map_err(|error| error.to_string())? {
+                    return Err(format!("source is missing artifact {}", digest.as_str()));
+                }
+                workspace
+                    .cas
+                    .put_file(digest, &source.path(digest))
+                    .map_err(|error| error.to_string())
+            }
+            Self::Git { repository, commit } => {
+                let mut child = Command::new("git")
+                    .arg("-C")
+                    .arg(repository)
+                    .args(["show", &format!("{commit}:cas/{}", digest.sharded_path())])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|_| "cannot start Git blob retrieval")?;
+                let mut stdout = child
+                    .stdout
+                    .take()
+                    .ok_or("Git blob stream is unavailable")?;
+                let result = workspace
+                    .cas
+                    .put_reader(digest, &mut stdout)
+                    .map_err(|error| error.to_string());
+                drop(stdout);
+                if result.is_err() {
+                    let _ = child.kill();
+                }
+                let status = child
+                    .wait()
+                    .map_err(|_| "cannot wait for Git blob retrieval")?;
+                if !status.success() {
+                    return Err(format!(
+                        "Git source is missing or cannot read artifact {}",
+                        digest.as_str()
+                    ));
+                }
+                result
+            }
+        }
+    }
+}
+
+/// Fetch and verify the manifest graph before copying any payload bytes.
+pub fn fetch_graph(
+    workspace: &Workspace,
+    source: &Snapshot,
+    digest: &Sha256Digest,
+) -> Result<BTreeMap<String, ProfileManifest>, String> {
+    let mut queue = vec![digest.clone()];
+    let mut seen = BTreeSet::new();
+    let mut manifests = BTreeMap::new();
+    while let Some(digest) = queue.pop() {
+        if !seen.insert(digest.as_str().to_owned()) {
+            continue;
+        }
+        let manifest = source.manifest(&digest)?;
+        for child in manifest.constituents.values() {
+            queue.push(child.clone());
+        }
+        if manifests
+            .insert(manifest.profile.clone(), manifest)
+            .is_some()
+        {
+            return Err("conflicting profile manifests in source graph".into());
+        }
+    }
+    for manifest in manifests.values() {
+        for (name, digest) in &manifest.constituents {
+            let child = manifests
+                .get(name)
+                .ok_or("source is missing a constituent manifest")?;
+            if child.digest()? != *digest || child.platform != manifest.platform {
+                return Err("constituent manifest identity mismatch".into());
+            }
+        }
+        profile_store::write_json(&workspace.object(&manifest.digest()?), manifest, true)?;
+    }
+    Ok(manifests)
+}
+
+pub fn fetch_blobs(
+    workspace: &Workspace,
+    source: &Snapshot,
+    manifests: &BTreeMap<String, ProfileManifest>,
+) -> Result<usize, String> {
+    let mut count = 0;
+    for digest in profile_store::reachable(manifests) {
+        let digest = Sha256Digest::parse(&digest).map_err(str::to_owned)?;
+        if source.copy_blob(workspace, &digest)? {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+pub fn export(
+    workspace: &Workspace,
+    manifests: &BTreeMap<String, ProfileManifest>,
+    output: &Path,
+) -> Result<(), String> {
+    let store = FileStore::new(output.join("cas"));
+    for digest in profile_store::reachable(manifests) {
+        let digest = Sha256Digest::parse(&digest).map_err(str::to_owned)?;
+        if !workspace
+            .cas
+            .verified(&digest)
+            .map_err(|error| error.to_string())?
+        {
+            return Err("cannot export a profile with missing artifacts".into());
+        }
+        store
+            .put_file(&digest, &workspace.cas.path(&digest))
+            .map_err(|error| error.to_string())?;
+    }
+    for manifest in manifests.values() {
+        profile_store::write_json(
+            &output.join(format!(
+                "plans/objects/{}.json",
+                manifest.digest()?.as_str()
+            )),
+            manifest,
+            true,
+        )?;
+        profile_store::write_json(
+            &output.join(format!(
+                "plans/{}-{}.lock",
+                manifest.profile, manifest.platform
+            )),
+            manifest,
+            false,
+        )?;
+    }
+    Ok(())
+}

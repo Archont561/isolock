@@ -9,16 +9,18 @@ Deliver profile-scoped plans that materialize only the runtime, package-manager 
 
 ## Exit criteria
 
-- [ ] A project can declare named Pixi, standalone, and composed profiles in `isolock.toml`.
-- [ ] `isolock plan --profile <name> --platform <platform>` emits a deterministic profile closure and records the resolved configuration digest.
-- [ ] A Rust Pixi profile provisions only a verified seed Pixi binary, its locked Conda closure, and its Cargo vendor closure; unrelated Python and TypeScript artifacts are excluded.
-- [ ] Isolock can materialize a locked Pixi environment offline from a CAS-derived local channel while preserving standalone Isolock and Pixi seed tools in `.isolock/bin`.
-- [ ] A standalone Rust profile and a Pixi Rust profile can coexist, share an identical Cargo vendor payload, and retain distinct runtime provenance.
-- [ ] CI selects profiles explicitly and fails if a locked profile is altered by an unrecorded configuration override.
+- [x] A project can declare named Pixi, standalone, and composed profiles in `isolock.toml`.
+- [x] `isolock plan --profile <name> --platform <platform>` emits a deterministic profile closure and records the resolved configuration digest.
+- [x] A Rust Pixi profile provisions only a verified seed Pixi binary, its locked Conda closure, and its Cargo vendor closure; unrelated Python and TypeScript artifacts are excluded.
+- [x] Isolock can materialize a locked Pixi environment offline from a CAS-derived local channel while preserving standalone Isolock and Pixi seed tools in `.isolock/bin`.
+- [x] A standalone Rust profile and a Pixi Rust profile can coexist, share an identical Cargo vendor payload, and retain distinct runtime provenance.
+- [x] CI selects profiles explicitly and fails if a locked profile is altered by an unrecorded configuration override.
 
 ## Status
 
-**Planned**.
+**Implemented** (ISO-13–18).
+
+The profile contracts have executable `rstest-bdd` bindings, plus negative trust-boundary/transport tests. Real-tool integration validates cold-cache offline Pixi linking and a verified standalone Rust vendor build; CI runs each with explicit profile/platform selection. See the [profile guide](../../docs/content/docs/profiles.mdx) for supported inputs and fail-closed limitations.
 
 ## Tasks
 

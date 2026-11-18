@@ -13,6 +13,7 @@ isolock-core.workspace = true
 isolock-cas.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+hex.workspace = true
 rattler_lock.workspace = true
 cargo-lock.workspace = true
 chaste.workspace = true

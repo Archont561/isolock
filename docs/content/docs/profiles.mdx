@@ -1,0 +1,277 @@
+---
+title: Locked environment profiles
+description: Configure, plan, transport, bootstrap, and retain verified profile closures.
+---
+
+## What a profile locks
+
+A profile selects a **provider**, **platform**, ecosystem lockfile roots, and independently
+verified seed tools. Isolock does not solve dependencies or download from registries while
+planning or materializing. The original reviewed artifacts must already be in a CAS or a
+configured storage snapshot.
+
+- **Pixi** selects exactly one environment/platform from `pixi.lock`. Only its Conda/wheel
+  records are selected, plus explicitly declared Cargo/PyPI/JavaScript roots.
+- **Standalone** selects reviewed relocatable runtime prefixes or single-file Node/Bun
+  executables, independently of Conda provenance.
+- **Composed** references constituent manifests. CAS identity is the original SHA-256,
+  so identical bytes are transferred/stored once even with multiple provenance records.
+
+The canonical planner uses `rattler_lock`, `cargo-lock`, and `chaste`. It receives a typed
+request, never reads configuration or environment variables, and never runs a solver.
+
+## Declare intent
+
+Copy this skeleton into the project root as `isolock.toml`. Replace the zero digests,
+versions, and public provenance URLs with reviewed artifact information **before use**.
+These placeholders do not grant trust or enable a host-tool fallback.
+
+```toml
+schema-version = 1
+
+[storage]
+cas-dir = ".isolock/cas"
+transport = "directory"
+source = "/srv/isolock-snapshot"
+reference = "isolock/v1"
+
+[profiles.rust-pixi]
+provider = "pixi"
+platforms = ["linux-64"]
+environment = "rust"
+pixi-lock = "pixi.lock"
+pixi-manifest = "pixi.toml"
+cargo-lock = "Cargo.lock"
+
+[profiles.rust-pixi.cargo]
+cargo-version = "1.100.0"
+target = "x86_64-unknown-linux-gnu"
+features = []
+all-features = false
+
+[profiles.rust-pixi.seeds.isolock]
+version = "0.1.0"
+platform = "linux-64"
+digest = "0000000000000000000000000000000000000000000000000000000000000000"
+filename = "isolock-linux-64"
+source = "https://github.com/example/releases/isolock-linux-64"
+format = "raw"
+
+[profiles.rust-pixi.seeds.pixi]
+version = "0.84.2"
+platform = "linux-64"
+digest = "0000000000000000000000000000000000000000000000000000000000000000"
+filename = "pixi-linux-64.tar.gz"
+source = "https://github.com/example/releases/pixi-linux-64.tar.gz"
+format = "tar-gz"
+entry = "pixi"
+```
+
+A standalone profile replaces the Pixi selection with `provider = "standalone"` and a
+`runtimes.rust`, `runtimes.python`, `runtimes.node`, or `runtimes.bun` tool declaration.
+It still declares an Isolock seed. The tool fields are the same as above. Archive runtime
+`entry` selects a **prefix directory**; seed `entry` selects an **executable file**.
+Rust prefixes provide `bin/cargo` and `bin/rustc`; Python prefixes provide `bin/python`
+and its pip module. Runtime prefixes must be relocatable, including their support
+libraries. Bundled linker/support executables are added to the controlled launcher PATH;
+platform libc/linker requirements remain the distribution's responsibility.
+
+For multi-platform profiles, put platform-specific seed/runtime declarations under
+`profiles.NAME.platform-tools.PLATFORM.seeds.TOOL` and
+`profiles.NAME.platform-tools.PLATFORM.runtimes.TOOL`. Optional
+`platform-tools.PLATFORM.cargo` replaces the Cargo policy for that platform. Planning
+resolves just the selected platform; other platforms' artifacts are not imported.
+
+A composed profile declares only `provider = "composed"`, `platforms`, and
+`compose = ["rust-pixi", "python-standalone", "bun-standalone"]`. Constituents must agree
+on shared seed policy. Ambiguous executable names are rejected, not silently overwritten.
+
+### Python and JavaScript catalogs
+
+A standalone Python root uses `pypi-lock = "requirements.lock"` containing exact
+platform-resolved `name==version --hash=sha256:DIGEST` wheel pins. A JavaScript root uses
+`javascript-lock = "package-lock.json"` (also Bun, pnpm, or Yarn tarball locks).
+Declare `catalog = "catalog.json"` for either adapter. The JSON catalog is an array:
+
+```json
+[
+  {
+    "name": "example",
+    "version": "1.0.0",
+    "platform": "linux-64",
+    "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "filename": "example-1.0.0-py3-none-any.whl",
+    "source": "https://files.pythonhosted.org/example-1.0.0-py3-none-any.whl",
+    "integrity": null
+  }
+]
+```
+
+JavaScript catalog entries additionally carry the exact lockfile SRI `integrity` and the
+original tarball filename/origin. Both SHA-256 and SRI are verified before extraction.
+The catalog itself, JavaScript package/workspace manifests, and selected lockfiles are
+recorded as immutable input digests.
+
+## Configuration and provenance
+
+```sh
+isolock config check
+isolock config show --profile rust-pixi
+isolock config explain storage.cas-dir
+```
+
+Precedence, lowest first: compiled defaults, user operational TOML, `isolock.toml`,
+`.isolock/config.local.toml`, environment, explicit flags. The default user file is
+`$XDG_CONFIG_HOME/isolock/config.toml` or `$HOME/.config/isolock/config.toml`;
+`--user-config` and `ISOLOCK_USER_CONFIG` can choose it. User TOML may only configure
+`storage.cas-dir` and GC roots, never introduce profiles or seeds.
+
+`ISOLOCK_CAS_DIR`, `ISOLOCK_STORAGE_REF`, `ISOLOCK_PIXI_ENVIRONMENT`, and
+`ISOLOCK_PIXI_VERSION` have named provenance. Profile-specific overrides require
+`--profile`. General nested settings use `ISOLOCK_CONFIG_`, double underscores between
+path components and single underscores for hyphens; for example
+`ISOLOCK_CONFIG_STORAGE__CAS_DIR`. Equivalent flags include `--cas-dir`,
+`--storage-ref`, `--pixi-environment`, and `--pixi-version`.
+
+The schema denies unknown fields and unsupported versions. There are **no inline secret
+fields**: credential-bearing URLs, signed query parameters, and userinfo are rejected.
+Invalid provider values/TOML are not echoed into diagnostics. Valid configuration
+rendering has no credential values to expose; use external package-manager credential
+facilities, not arbitrary strings in configuration. Explanations identify the winning
+provider without dumping rejected inputs.
+
+## Plan, transport, and review
+
+```sh
+isolock plan --profile rust-pixi --platform linux-64
+isolock seed-manifest --profile rust-pixi --platform linux-64
+# Review/version the text plan objects, alias, seed manifest, and bootstrap script.
+isolock fetch --profile rust-pixi --platform linux-64
+isolock plan --profile rust-pixi --platform linux-64 --ci
+isolock sync --profile rust-pixi --platform linux-64 --locked --offline
+. .isolock/activate/rust-pixi-linux-64
+cargo build --locked --offline
+```
+
+`plan` captures original input bytes in CAS and writes immutable objects to
+`.isolock/plans/objects/DIGEST.json`, with a mutable reviewed alias at
+`.isolock/plans/PROFILE-PLATFORM.lock`. The configuration digest locks provider/seed
+policy, selected inputs and record metadata, derivation/materializer schema versions,
+constituents, and storage identity. Operational CAS paths are excluded.
+
+`plan --ci`/`--locked`/`--check` never update a plan. They preflight changed configuration
+and input digests before transfer or execution, then report profile-specific missing
+artifacts. `sync` always consumes a reviewed lock, even without the documentary
+`--locked` flag. `sync --offline` forbids all transport, including with `--manifest`.
+It does not silently accept a system Pixi, Isolock, or runtime from PATH.
+
+The filesystem CAS stores raw originals at `CAS/sha256/aa/bb/FULL_DIGEST`, with verified,
+streaming, no-clobber publication. To initially populate it, copy reviewed originals to
+those paths (or use the `isolock_cas::FileStore` API). A cache hit is verified; corrupt
+bytes are an error, not an excuse to fetch or replace them. This is distinct from the
+legacy filename/shard environment layout.
+
+`export --profile NAME --platform PLATFORM --output DIRECTORY` writes a portable
+snapshot with `plans/objects`, plan aliases, and `cas/sha256`. Directory transport fetches
+the selected manifest graph **before** copying only its reachable missing blobs. A clean
+consumer can select a reviewed digest with `fetch --manifest DIGEST` or
+`sync --manifest DIGEST`; local configuration/lockfiles must still match.
+
+For Git, configure `storage.transport = "git"` and a public/local `storage.source`.
+Planning pins `storage.reference` to a commit containing payloads. Publish the exported
+manifest objects in a subsequent storage commit: restores read manifests from the named
+ref but payloads exclusively from the locked commit. The fallback explicitly warns that
+shallow fetching transfers a **broader snapshot**, not a blob-selective Git transfer.
+This command does not publish commits or bypass the linear `isolock/v1` ingestion policy.
+Git host file-size limits still apply; use directory transport for large unsharded
+originals. There is no automatic conversion of legacy sharded storage snapshots.
+
+## Bootstrap without a package-manager environment
+
+```sh
+sh .isolock/bootstrap.sh --profile rust-pixi --platform linux-64 --offline
+# Or use configured storage for missing bytes:
+sh .isolock/bootstrap.sh --profile rust-pixi --platform linux-64 --source /srv/isolock-snapshot
+```
+
+`seed-manifest` generates the reviewed shell-readable `.isolock/seeds/PROFILE-PLATFORM.manifest`.
+It declares a byte-pinned plan object and separate seed archive records. The shell first
+fetches/verifies that object, then verifies each seed and atomically exposes it under
+`.isolock/bin`. Version-owned `.isolock/bin/.seeds/DIGEST/TOOL` paths, not convenience
+aliases or host tools, are executed. Platform mismatch and modified seeds fail closed.
+Only POSIX shell/standard utilities, native tar, SHA-256 utility, and optionally Git are
+needed. `--remote` retains the explicitly reported broader `isolock/v1` Git fallback.
+Configuration is checked by the verified Isolock seed, not parsed by shell.
+
+The old positional-environment bootstrap remains available for existing v1 manifests.
+It is not the new profile/seed protocol.
+
+## Materialization and receipts
+
+- **Conda:** original archives are never untarred into a prefix by Isolock. Verified
+  records/archives derive a sealed per-profile channel and local-file-only Pixi lock and
+  manifest. The verified seed runs `pixi install --environment NAME --locked --offline`
+  against that workspace, with isolated config/cache and no inherited Pixi configuration.
+  This works with a cold cache; merely supplying an HTTP mirror does not. The derived
+  implicit default lock references the same bytes but is not installed. The installed
+  Conda record set must match exactly, then `.pixi/envs/NAME` projects that prefix.
+  Existing unmanaged prefixes are never overwritten.
+- **Cargo:** originals derive `name-version` vendor sources and `.cargo-checksum.json`.
+  The shared key includes lock digest, Cargo version, target, features, all-features policy,
+  and derivation schema. Profile launchers select that vendor source and offline Cargo
+  home. Identical derivations can be shared between Pixi and standalone Rust.
+- **Python:** a sealed wheelhouse and hashed requirements accompany Python/pip launchers.
+  `pip install` with **no additional arguments** installs exactly those wheels into the
+  profile's separate site-packages directory. `pip --version` is also supported. Direct
+  URLs/extra resolution flags are rejected by that wrapper; Python launchers expose the
+  site directory without mutating the immutable runtime prefix.
+- **JavaScript:** locked destinations and executable entries are restored without running
+  lifecycle scripts. `bun x NAME`/`bunx NAME` dispatch only to restored executable names,
+  never registry resolution; missing names fail before calling Bun. Resolution-changing
+  Bun subcommands are disabled and normal execution uses `--no-install`. Node is exposed
+  with its verified runtime and restored tree. Only one distinct `node_modules` projection
+  may own a workspace; use separate workspaces for incompatible JavaScript profiles.
+
+`.isolock/receipts/PROFILE-PLATFORM.json` records manifest/provider/environment, exact
+original/linked artifact groups, shared payload paths, materializer versions, and derived
+Pixi input digests. Every reusable immutable tree is rehashed against its seal on sync;
+changed records, metadata, vendor files, wheelhouses, and seeds are not silently reused.
+Profile-local Isolock launchers wrap a single verified seed, never a copied binary.
+
+Launchers are **not an OS/network sandbox**. Arbitrary user programs can perform I/O or
+invoke binaries by absolute path; use external network isolation when that is required.
+The locked materializers/package-execution paths themselves never resolve upstream.
+
+### Explicit v1 boundaries
+
+Planning/materialization fails closed for Cargo git dependencies, Pixi source packages,
+PyPI sdists/unresolved markers, Yarn repacked ZIP-only integrity, unsafe archive links or
+special nodes, and ambiguous package/executable collisions. Use reviewed registry crates,
+platform-resolved wheels, tarball locks, and **link-free relocatable** runtime/seed
+archives (dereference safe links when preparing those artifacts). No implicit online build,
+post-link/lifecycle script, arbitrary archive path, or incompatible host fallback is used.
+
+## Garbage collection and CI
+
+```sh
+isolock gc                         # deterministic dry-run JSON
+isolock gc --root rust-pixi-linux-64
+isolock gc --apply                  # explicit deletion
+```
+
+`gc.roots = ["rust-pixi-linux-64"]` selects reviewed plan aliases. With no configured
+roots, all local aliases are roots. Active receipt manifests are always retained. All
+workspace registrations in a shared CAS are additional durable roots, so collecting one
+workspace cannot delete another workspace's bytes. Missing/corrupt roots or noncanonical
+CAS paths stop collection. Stale workspace registrations retain bytes conservatively;
+there is intentionally no automatic forgetting of a disappeared workspace. Plan/sync/fetch
+and GC serialize via a CAS operation lease. After an interrupted process, remove the lease
+only after confirming no owner is still running.
+
+CI explicitly selects `rust-pixi/linux-64` or `rust-standalone/linux-64` and executes only
+that profile's materialization test. Developer tools come from the existing reviewed
+sandbox; all Cargo tests/builds run offline. The real Pixi test uses a cold isolated cache,
+while the real standalone test builds a checksum-locked registry dependency through the
+verified Rust prefix and vendor source. Normal offline tests also cover Python, Bun,
+composition, overrides, manifest-first/selective transport, hostile archives, and shared
+GC roots through `rstest-bdd` bindings and integration tests.

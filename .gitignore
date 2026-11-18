@@ -2,7 +2,13 @@
 /.pixi-sandbox/
 coverage/
 .pixi/
+# Operational state is ignored; reviewed text plans/seeds may travel with code.
 .isolock/
+!/.isolock/
+/.isolock/*
+!/.isolock/plans/
+!/.isolock/seeds/
+!/.isolock/bootstrap.sh
 output/
 *.conda
 docs/out/

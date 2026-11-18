@@ -1515,6 +1515,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 name = "isolock"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "clap",
  "clifacet",
  "figment",
@@ -1525,6 +1526,7 @@ dependencies = [
  "rstest",
  "rstest-bdd",
  "rstest-bdd-macros",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
@@ -1543,6 +1545,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tempfile",
 ]
 
 [[package]]
@@ -1562,6 +1565,7 @@ version = "0.1.0"
 dependencies = [
  "cargo-lock",
  "chaste",
+ "hex",
  "isolock-cas",
  "isolock-core",
  "proptest",

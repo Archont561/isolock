@@ -2,6 +2,9 @@
 //! Content Addressable Storage (CAS) primitives and artifact digest verification.
 
 mod sharding;
+mod store;
+
+pub use store::{digest_file, FileStore};
 
 pub use sharding::{
     read_shard_manifest, shard_file, verify_shards, CasError, ShardManifest, ShardPart,
