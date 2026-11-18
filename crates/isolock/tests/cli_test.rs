@@ -9,27 +9,13 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::TempDir;
 
-struct TemporaryDirectory(PathBuf);
-
-impl TemporaryDirectory {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after the Unix epoch")
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("isolock-cli-test-{}-{nonce}", std::process::id()));
-        fs::create_dir_all(&path).expect("creates an isolated CLI fixture directory");
-        Self(path)
-    }
-}
-
-impl Drop for TemporaryDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+fn temporary_directory() -> TempDir {
+    tempfile::Builder::new()
+        .prefix("isolock-cli-test-")
+        .tempdir()
+        .expect("creates an isolated CLI fixture directory")
 }
 
 fn http_get(address: &str, path: &str) -> Vec<u8> {
@@ -61,10 +47,10 @@ fn test_cli_version_flag() {
 
 #[test]
 fn plan_fails_closed_when_no_expected_plan_is_available() {
-    let fixture_dir = TemporaryDirectory::new();
+    let fixture_dir = temporary_directory();
     let output = Command::new(env!("CARGO_BIN_EXE_isolock"))
         .args(["plan", "--ci"])
-        .current_dir(&fixture_dir.0)
+        .current_dir(fixture_dir.path())
         .env_remove("ISOLOCK_PLAN")
         .env_remove("ISOLOCK_CAS_DIR")
         .output()
@@ -91,14 +77,14 @@ fn test_cli_default_usage_output() {
 fn test_cli_subcommands() {
     let bin = env!("CARGO_BIN_EXE_isolock");
 
-    let fixture_dir = TemporaryDirectory::new();
-    let cas_dir = fixture_dir.0.join("cas");
-    let empty_plan_path = fixture_dir.0.join("empty-plan.json");
+    let fixture_dir = temporary_directory();
+    let cas_dir = fixture_dir.path().join("cas");
+    let empty_plan_path = fixture_dir.path().join("empty-plan.json");
     fs::write(&empty_plan_path, r#"{"artifacts":[]}"#)
         .expect("writes an explicit empty plan for the clean-plan check");
     let plan_out = Command::new(bin)
         .args(["plan", "--ci"])
-        .current_dir(&fixture_dir.0)
+        .current_dir(fixture_dir.path())
         .env("ISOLOCK_PLAN", &empty_plan_path)
         .env("ISOLOCK_CAS_DIR", &cas_dir)
         .output()
@@ -114,7 +100,7 @@ fn test_cli_subcommands() {
     fs::create_dir_all(cas_blob.parent().expect("CAS blob has a shard directory"))
         .expect("creates CAS shard directory");
     fs::write(&cas_blob, package_bytes).expect("writes verified CAS bytes");
-    let plan_path = fixture_dir.0.join("plan.json");
+    let plan_path = fixture_dir.path().join("plan.json");
     fs::write(
         &plan_path,
         serde_json::to_vec(&serde_json::json!({
@@ -233,9 +219,9 @@ fn assert_dispatch_command_matches_inputs<'a>(command: &'a str, options: &[&str]
 
 #[test]
 fn generated_dispatch_arguments_match_workflow_dispatch_inputs() {
-    let fixture_dir = TemporaryDirectory::new();
-    let plan_path = fixture_dir.0.join("plan.json");
-    let cas_dir = fixture_dir.0.join("cas");
+    let fixture_dir = temporary_directory();
+    let plan_path = fixture_dir.path().join("plan.json");
+    let cas_dir = fixture_dir.path().join("cas");
     fs::create_dir_all(&cas_dir).expect("creates an empty CAS fixture");
 
     let cases = [
@@ -262,7 +248,7 @@ fn generated_dispatch_arguments_match_workflow_dispatch_inputs() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_isolock"))
         .args(["plan", "--ci"])
-        .current_dir(&fixture_dir.0)
+        .current_dir(fixture_dir.path())
         .env("ISOLOCK_PLAN", &plan_path)
         .env("ISOLOCK_CAS_DIR", &cas_dir)
         .output()
@@ -313,8 +299,8 @@ fn generated_dispatch_arguments_match_workflow_dispatch_inputs() {
 #[test]
 fn exec_injects_local_registry_urls_and_propagates_child_exit_codes() {
     let bin = env!("CARGO_BIN_EXE_isolock");
-    let fixture_dir = TemporaryDirectory::new();
-    let original_pixi_config = fixture_dir.0.join("pixi-config.toml");
+    let fixture_dir = temporary_directory();
+    let original_pixi_config = fixture_dir.path().join("pixi-config.toml");
     fs::write(
         &original_pixi_config,
         "offline = true\n[mirrors]\n\"https://example.invalid\" = [\"https://mirror.example.invalid\"]\n\"https://conda.anaconda.org/conda-forge\" = [\"https://prefix.dev/conda-forge\"]\n",
@@ -352,7 +338,7 @@ struct PlanPackageFixture {
 
 #[derive(Default)]
 struct PlanDispatchWorld {
-    fixture_dir: RefCell<Option<TemporaryDirectory>>,
+    fixture_dir: RefCell<Option<TempDir>>,
     packages: RefCell<Vec<PlanPackageFixture>>,
     output: RefCell<Option<Output>>,
 }
@@ -367,13 +353,13 @@ fn plan_project_dir(world: &PlanDispatchWorld) -> PathBuf {
         .fixture_dir
         .borrow()
         .as_ref()
-        .map(|fixture| fixture.0.clone())
+        .map(|fixture| fixture.path().to_path_buf())
     {
         return path;
     }
 
-    let fixture = TemporaryDirectory::new();
-    let path = fixture.0.clone();
+    let fixture = temporary_directory();
+    let path = fixture.path().to_path_buf();
     fs::create_dir_all(path.join(".isolock/cas"))
         .expect("creates the plan and CAS fixture directories");
     *world.fixture_dir.borrow_mut() = Some(fixture);
@@ -576,6 +562,31 @@ fn then_output_formats_commands(world: &PlanDispatchWorld, docstring: String) {
         "expected dispatch commands {:?} in:\n{output}",
         docstring.trim()
     );
+}
+
+#[test]
+fn plan_fixture_survives_another_scenarios_cleanup() {
+    let surviving_world = world();
+    given_project_and_airlock_plan(
+        &surviving_world,
+        "requirements.txt".into(),
+        "fastapi==0.115.0".into(),
+    );
+    {
+        let other_world = world();
+        given_project_and_airlock_plan(
+            &other_world,
+            "requirements.txt".into(),
+            "pydantic==2.9.2".into(),
+        );
+    }
+
+    given_empty_cas(&surviving_world);
+    when_run_plan(&surviving_world, "isolock plan --ci".into());
+    then_exit_code_is(&surviving_world, 1);
+    then_output_reports(&surviving_world, "Verdict: DRIFT DETECTED".into());
+    then_output_reports(&surviving_world, "fastapi==0.115.0".into());
+    assert!(!plan_output(&surviving_world).contains("pydantic==2.9.2"));
 }
 
 #[scenario(path = "../../backlog/features/plan-drift.feature", index = 0)]
