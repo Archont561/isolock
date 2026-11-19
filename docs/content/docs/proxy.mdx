@@ -1,0 +1,128 @@
+---
+title: Proxy execution and resource limits
+description: Configure bounded loopback requests and scoped package-manager execution.
+---
+
+## Run an existing airlock plan
+
+The loopback proxy consumes a legacy JSON `AirlockPlan`, not a profile manifest. A missing
+**default** `.isolock/plan.json` means an empty snapshot for `serve` and `exec`; an explicitly
+configured missing plan fails closed. `isolock plan --ci` still requires an expected plan.
+For profile planning and offline materialization, use the [profile guide](./profiles).
+
+```sh
+isolock serve --port 0 --max-concurrency 16
+isolock exec cargo build --locked
+isolock exec -- npm test
+```
+
+`exec` does not require `--`. Everything after `exec` (except an optional leading `--`)
+is the child command, including flags such as `--version`. Configure its proxy through
+`isolock.toml` or environment overrides rather than inserting Isolock flags before the child.
+A normal child exit code is preserved; on Unix a signal maps to `128 + signal`.
+
+## Typed operational configuration
+
+Both commands use the same Figment boundary as `isolock config check`, `show`, and `explain`:
+compiled defaults, user operational configuration, project `isolock.toml`, generated
+`.isolock/config.local.toml`, environment, then explicit CLI flags. Paths in project
+configuration resolve against the working project directory.
+
+```toml
+[proxy]
+plan = ".isolock/plan.json"
+cargo-home = ".isolock/cargo-home"
+mode = "local-airlock"
+port = 0
+
+[proxy.limits]
+max-concurrency = 32
+header-timeout-ms = 5000
+write-timeout-ms = 5000
+shutdown-grace-ms = 2000
+```
+
+| Setting | Environment override | Allowed range |
+| --- | --- | --- |
+| `proxy.limits.max-concurrency` | `ISOLOCK_PROXY_MAX_CONCURRENCY` | 1–256 |
+| `proxy.limits.header-timeout-ms` | `ISOLOCK_PROXY_HEADER_TIMEOUT_MS` | 1–60000 ms |
+| `proxy.limits.write-timeout-ms` | `ISOLOCK_PROXY_WRITE_TIMEOUT_MS` | 1–60000 ms |
+| `proxy.limits.shutdown-grace-ms` | `ISOLOCK_PROXY_SHUTDOWN_GRACE_MS` | 1–60000 ms |
+| `proxy.port` | `ISOLOCK_PROXY_PORT` | 0–65535 |
+| `proxy.plan` | `ISOLOCK_PLAN` | Nonempty path |
+| `proxy.cargo-home` | `ISOLOCK_CARGO_HOME` | Nonempty path |
+| `proxy.mode` | `ISOLOCK_MODE` | `connected`, `ci`, `local-airlock` |
+| `storage.cas-dir` | `ISOLOCK_CAS_DIR` | Nonempty path |
+
+`serve` accepts `--port`, `--mode`, `--max-concurrency`, `--config`, and `--user-config`.
+User configuration may set proxy port, Cargo home, and resource limits, but not change mode
+or the expected plan. Unknown keys, invalid ranges, and conflicting environment aliases
+are errors. `ISOLOCK_CONFIG_PROXY__LIMITS__MAX_CONCURRENCY` is the generic equivalent of
+the short concurrency override; supplying both aliases is rejected.
+
+```sh
+isolock config explain proxy.limits.max-concurrency
+ISOLOCK_PROXY_MAX_CONCURRENCY=8 isolock exec cargo build --locked
+```
+
+Proxy limits, ports, and local cache paths do **not** participate in profile plan digests
+or artifact identities. A locked-plan BDD regression checks unchanged serialized plans
+when concurrency and all three deadlines change.
+
+## Admission and shutdown policy
+
+- At most `max-concurrency` request workers run per listener. There is no application
+  request queue and no worker is created for an overloaded connection. The OS TCP backlog
+  remains bounded by the operating system.
+- Overload returns HTTP **503 Service Unavailable** without consulting adapters or upstream.
+  The accept loop spends at most a 25 ms socket-write deadline on that response; a peer
+  that cannot receive it is disconnected. Clients should read HTTP framing rather than
+  require a graceful EOF when the server rejects unread request input.
+- HTTP headers have a 64 KiB ceiling and an **absolute** header deadline, not a timeout
+  reset by each trickled byte. Each response has an absolute wire-write deadline, including
+  partial writes. Metadata synthesis/compression is synchronous adapter work, not part of
+  the socket-write deadline. Requests use one connection and `Connection: close`.
+- Shutdown closes the listener first, signals cancellation, interrupts accepted worker
+  sockets, and joins completed workers through the grace period. This bounds the normal
+  wait to the grace period plus accept-loop polling/overload-write time and scheduling.
+- Rust cannot forcibly terminate arbitrary injected adapter code. An adapter that ignores
+  cancellation past the grace period is **counted and detached**, not silently treated as
+  joined. Explicit shutdown returns `TimedOut`; Drop reports the failure to stderr.
+  `ProxyHandle::monitor().stats()` remains usable after shutdown and exposes active,
+  peak-active, spawned, rejected, completed, panicked, and detached counts. Detached is a
+  cumulative count; active falls when that worker eventually finishes.
+
+Adapters are trusted compiled code: check `RegistryContext::is_cancelled()` during expensive
+work and bound any I/O independently. A grace-expired adapter can retain its snapshot until
+it finishes; this is accounting, not thread preemption or an OS resource sandbox.
+
+## Session ownership and package-manager configuration
+
+One `ExecutionSession` owns the live proxy and temporary Pixi configuration. Its RAII
+cleanup runs on setup errors, child startup failure, normal child completion, and unwinding.
+On Unix the temporary file has private permissions. It is removed even when setup or
+shutdown fails. Abrupt process termination cannot run Rust destructors.
+
+Typed environment contributions compose Cargo, Pixi/Conda, pip/uv, npm, and generic proxy
+variables. An explicit inherited `PIXI_CONFIG_FILE` is read once, its common Conda-host
+mirrors are redirected locally, and unrelated settings are retained without modifying the
+original file. Malformed config diagnostics do not print its contents. Project-local Pixi
+configuration still applies. Cargo's generated source-replacement config remains in the
+resolved Cargo home; that home is persistent operational state, not temporary session data.
+
+The proxy only binds loopback, accepts GET/HEAD and single artifact ranges, and compresses
+metadata with Brotli while serving original artifact bytes unchanged. Airlock/CI misses
+return 403; connected misses return 502 because no upstream fetcher is implemented. Proxy
+environment injection is a convenience boundary, **not** an OS or network sandbox; tools
+can ignore it or inherit other package-manager settings.
+
+## Extend registry composition
+
+`default_adapters()` supplies the Conda, PyPI, npm, and Cargo adapters. Append an adapter with
+`AdapterRegistry::register`, or build an empty registry with `AdapterRegistry::new`, then pass
+it to `ProxyServer::bind_with_adapters`. Order is explicit: the first non-`NotFound` action
+owns a route. Adding an adapter does not require editing the listener or HTTP setup.
+
+The response layer uses a closed metadata/artifact/text classification. Compression,
+Range transformation, and writer serialization are separate operations with unit tests;
+artifact Range selection borrows CAS bytes rather than copying the selected payload.

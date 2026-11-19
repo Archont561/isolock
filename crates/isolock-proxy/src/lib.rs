@@ -2,13 +2,17 @@
 //! Hermetic interceptor proxy and local registry adapter for Isolock.
 
 mod adapters;
+mod request;
+mod resources;
+mod response;
 mod server;
 
 pub use adapters::{
-    CargoAdapter, CondaAdapter, NpmAdapter, PypiAdapter, RegistryAdapter, RegistryContext,
-    RegistryRouteAction,
+    default_adapters, AdapterRegistry, CargoAdapter, CondaAdapter, NpmAdapter, PypiAdapter,
+    RegistryAdapter, RegistryContext, RegistryRouteAction,
 };
-pub use server::{ProxyHandle, ProxyServer};
+pub use resources::{ProxyLimits, ProxyStats};
+pub use server::{ProxyHandle, ProxyMonitor, ProxyServer};
 
 use isolock_core::AirlockMode;
 pub use rattler_conda_types::{ChannelInfo, PackageRecord, RepoData};
@@ -31,6 +35,8 @@ pub struct ProxyConfig {
     pub bind_host: String,
     pub port: u16,
     pub mode: AirlockMode,
+    #[serde(default)]
+    pub limits: ProxyLimits,
 }
 
 impl ProxyConfig {
@@ -41,7 +47,17 @@ impl ProxyConfig {
             bind_host: bind_host.into(),
             port,
             mode,
+            limits: ProxyLimits::default(),
         }
+    }
+}
+
+impl ProxyConfig {
+    /// Overrides operational request resource bounds without changing plan/CAS identity.
+    #[must_use]
+    pub const fn with_limits(mut self, limits: ProxyLimits) -> Self {
+        self.limits = limits;
+        self
     }
 }
 

@@ -43,6 +43,10 @@ impl ShardManifest {
     }
 
     /// Checks that the manifest describes a canonical, complete shard sequence.
+    ///
+    /// # Errors
+    /// Returns invalid-filename or invalid-manifest errors for noncanonical schemas, names,
+    /// part ordering/counts, sizes, or checked-arithmetic failures.
     pub fn validate(&self) -> Result<(), CasError> {
         validate_filename(&self.original_filename)?;
         if self.schema_version != SHARD_MANIFEST_SCHEMA_VERSION {
@@ -233,6 +237,10 @@ impl From<serde_json::Error> for CasError {
 /// Parts and a `<filename>.shards.json` manifest are written to `shards_directory`.
 /// The source is streamed using a fixed-size buffer; artifacts at or below the limit
 /// return `Ok(None)` and do not create the destination directory.
+///
+/// # Errors
+/// Returns file I/O, invalid-source/filename, source-change, or manifest errors.
+/// Files created by this call are removed on failure; pre-existing files are never clobbered.
 pub fn shard_file(
     source_path: impl AsRef<Path>,
     shards_directory: impl AsRef<Path>,
@@ -259,12 +267,16 @@ pub fn shard_file(
     fs::create_dir_all(shards_directory)?;
     let mut created_files = Vec::new();
     let result = write_shard_set(
-        &mut source,
-        source_path,
+        ShardWriteContext {
+            source: &mut source,
+            source_path,
+            original_size_bytes,
+            total_read: 0,
+            original_hasher: Sha256::new(),
+            created_files: &mut created_files,
+        },
         shards_directory,
         original_filename,
-        original_size_bytes,
-        &mut created_files,
     );
 
     if result.is_err() {
@@ -285,21 +297,11 @@ struct ShardWriteContext<'a> {
 }
 
 fn write_shard_set(
-    source: &mut File,
-    source_path: &Path,
+    mut context: ShardWriteContext<'_>,
     shards_directory: &Path,
     original_filename: String,
-    original_size_bytes: u64,
-    created_files: &mut Vec<PathBuf>,
 ) -> Result<ShardManifest, CasError> {
-    let mut context = ShardWriteContext {
-        source,
-        source_path,
-        original_size_bytes,
-        total_read: 0,
-        original_hasher: Sha256::new(),
-        created_files,
-    };
+    let original_size_bytes = context.original_size_bytes;
     let count = chunk_count(original_size_bytes, SHARD_SIZE_BYTES);
     let mut chunks = Vec::new();
 
@@ -345,9 +347,9 @@ fn write_shard_part(
 
     let mut part_hasher = Sha256::new();
     let mut part_read = 0_u64;
-    let mut buffer = [0_u8; IO_BUFFER_SIZE];
+    let mut buffer = vec![0_u8; IO_BUFFER_SIZE].into_boxed_slice();
     while part_read < chunk_size {
-        let read_limit = (chunk_size - part_read).min(buffer.len() as u64) as usize;
+        let read_limit = bounded_read_length(chunk_size - part_read, buffer.len())?;
         let read = context.source.read(&mut buffer[..read_limit])?;
         if read == 0 {
             return Err(CasError::SourceChanged {
@@ -359,8 +361,8 @@ fn write_shard_part(
         part_file.write_all(&buffer[..read])?;
         part_hasher.update(&buffer[..read]);
         context.original_hasher.update(&buffer[..read]);
-        part_read += read as u64;
-        context.total_read += read as u64;
+        part_read = add_read_count(part_read, read)?;
+        context.total_read = add_read_count(context.total_read, read)?;
     }
     part_file.flush()?;
     part_file.sync_all()?;
@@ -415,6 +417,9 @@ fn write_manifest(
 }
 
 /// Reads and validates a shard manifest from JSON.
+///
+/// # Errors
+/// Returns I/O, malformed-JSON, or manifest validation errors.
 pub fn read_shard_manifest(path: impl AsRef<Path>) -> Result<ShardManifest, CasError> {
     let file = File::open(path)?;
     let manifest: ShardManifest = serde_json::from_reader(BufReader::new(file))?;
@@ -427,6 +432,9 @@ pub fn read_shard_manifest(path: impl AsRef<Path>) -> Result<ShardManifest, CasE
 /// Consumers can reassemble the payload with POSIX `cat` over the part filenames
 /// in the manifest; this function checks the same ordered byte stream without
 /// buffering the complete artifact in memory.
+///
+/// # Errors
+/// Returns I/O, invalid-manifest, size/digest mismatch, or checked-count errors.
 pub fn verify_shards(
     shards_directory: impl AsRef<Path>,
     manifest: &ShardManifest,
@@ -494,18 +502,34 @@ fn hash_part<R: Read>(
     let mut part_hasher = Sha256::new();
     let mut size = 0_u64;
     let read_limit = expected_size.saturating_add(1);
-    let mut buffer = [0_u8; IO_BUFFER_SIZE];
+    let mut buffer = vec![0_u8; IO_BUFFER_SIZE].into_boxed_slice();
     while size < read_limit {
-        let length = (read_limit - size).min(buffer.len() as u64) as usize;
+        let length = bounded_read_length(read_limit - size, buffer.len())?;
         let read = reader.read(&mut buffer[..length])?;
         if read == 0 {
             break;
         }
         part_hasher.update(&buffer[..read]);
         original_hasher.update(&buffer[..read]);
-        size += read as u64;
+        size = add_read_count(size, read)?;
     }
     Ok((size, Sha256Digest::from_hash_output(part_hasher.finalize())))
+}
+
+fn bounded_read_length(remaining: u64, capacity: usize) -> Result<usize, CasError> {
+    let capacity = u64::try_from(capacity)
+        .map_err(|_| CasError::InvalidManifest("I/O buffer capacity exceeds u64".into()))?;
+    usize::try_from(remaining.min(capacity)).map_err(|_| {
+        CasError::InvalidManifest("bounded read length exceeds the target address space".into())
+    })
+}
+
+fn add_read_count(total: u64, read: usize) -> Result<u64, CasError> {
+    let read = u64::try_from(read)
+        .map_err(|_| CasError::InvalidManifest("read count exceeds u64".into()))?;
+    total
+        .checked_add(read)
+        .ok_or_else(|| CasError::InvalidManifest("read byte count overflows u64".into()))
 }
 
 fn chunk_count(total_size: u64, chunk_size: u64) -> u64 {
@@ -528,4 +552,106 @@ fn validate_filename(filename: &str) -> Result<(), CasError> {
         return Err(CasError::InvalidFilename(filename.to_owned()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn read_lengths_and_counters_do_not_narrow_large_sizes() {
+        for remaining in [0, 1, 65535, 65536, 65537, u64::from(u32::MAX), u64::MAX] {
+            assert_eq!(
+                bounded_read_length(remaining, IO_BUFFER_SIZE).unwrap(),
+                usize::try_from(remaining.min(65536)).unwrap()
+            );
+        }
+        assert_eq!(bounded_read_length(u64::MAX, 0).unwrap(), 0);
+        assert_eq!(
+            bounded_read_length(u64::MAX, usize::MAX).unwrap(),
+            usize::MAX
+        );
+        assert_eq!(add_read_count(u64::MAX - 1, 1).unwrap(), u64::MAX);
+        assert!(matches!(
+            add_read_count(u64::MAX, 1),
+            Err(CasError::InvalidManifest(_))
+        ));
+        assert_eq!(
+            chunk_count(u64::MAX, SHARD_SIZE_BYTES),
+            u64::MAX / SHARD_SIZE_BYTES + 1
+        );
+        for size in [SHARD_SIZE_BYTES - 1, SHARD_SIZE_BYTES, SHARD_SIZE_BYTES + 1] {
+            assert_eq!(
+                chunk_count(size, SHARD_SIZE_BYTES),
+                if size > SHARD_SIZE_BYTES { 2 } else { 1 }
+            );
+        }
+    }
+
+    #[test]
+    fn heap_buffer_streaming_preserves_exact_bytes_around_buffer_boundary() {
+        for size in [
+            0,
+            1,
+            IO_BUFFER_SIZE - 1,
+            IO_BUFFER_SIZE,
+            IO_BUFFER_SIZE + 1,
+            IO_BUFFER_SIZE * 2 + 1,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let source_path = temp.path().join("source");
+            let bytes = vec![0xAB; size];
+            fs::write(&source_path, &bytes).unwrap();
+            let mut source = File::open(&source_path).unwrap();
+            let mut created = Vec::new();
+            let size = u64::try_from(size).unwrap();
+            let mut context = ShardWriteContext {
+                source: &mut source,
+                source_path: &source_path,
+                original_size_bytes: size,
+                total_read: 0,
+                original_hasher: Sha256::new(),
+                created_files: &mut created,
+            };
+            let part =
+                write_shard_part(&mut context, temp.path(), 0, "part000".into(), size).unwrap();
+            assert_eq!(part.size_bytes, size);
+            assert_eq!(part.sha256, Sha256Digest::from_bytes(&bytes));
+            assert_eq!(context.total_read, size);
+            assert_eq!(fs::read(temp.path().join("part000")).unwrap(), bytes);
+            assert_eq!(
+                hash_part(&mut Cursor::new(&bytes), size, &mut Sha256::new()).unwrap(),
+                (size, part.sha256)
+            );
+        }
+    }
+
+    #[test]
+    fn verifier_detects_short_and_extra_data_at_the_read_boundary() {
+        let bytes = vec![7; IO_BUFFER_SIZE + 1];
+        let expected = u64::try_from(IO_BUFFER_SIZE).unwrap();
+        assert_eq!(
+            hash_part(&mut Cursor::new(&bytes), expected, &mut Sha256::new())
+                .unwrap()
+                .0,
+            expected + 1
+        );
+        assert_eq!(
+            hash_part(
+                &mut Cursor::new(&bytes[..IO_BUFFER_SIZE - 1]),
+                expected,
+                &mut Sha256::new()
+            )
+            .unwrap()
+            .0,
+            expected - 1
+        );
+        assert_eq!(
+            hash_part(&mut Cursor::new([]), u64::MAX, &mut Sha256::new())
+                .unwrap()
+                .0,
+            0
+        );
+    }
 }

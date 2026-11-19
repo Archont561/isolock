@@ -3,7 +3,7 @@ use super::{
     RegistryAdapter, RegistryContext, RegistryRouteAction,
 };
 use crate::MIME_PYPI_SIMPLE_JSON;
-use isolock_core::Registry;
+use isolock_core::{Registry, RegistryArchive};
 use isolock_plan::{PlannedArtifact, PlannedArtifactMetadata};
 use serde_json::{json, Value};
 
@@ -27,20 +27,20 @@ impl RegistryAdapter for PypiAdapter {
             Err(error) => return RegistryRouteAction::BadRequest(error),
         };
         if let Some(project) = simple_project(&path) {
-            return self.simple_index(project, context);
+            return Self::simple_index(project, context);
         }
         if let Some(filename) = path.strip_prefix("/pypi/packages/") {
             if !valid_filename(filename) {
                 return RegistryRouteAction::BadRequest("invalid wheel filename".into());
             }
-            return self.download(filename, context);
+            return Self::download(filename, context);
         }
         RegistryRouteAction::NotFound
     }
 }
 
 impl PypiAdapter {
-    fn simple_index(&self, project: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
+    fn simple_index(project: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
         if project.is_empty() || project.contains('/') {
             return RegistryRouteAction::BadRequest("invalid PyPI project name".into());
         }
@@ -110,7 +110,7 @@ impl PypiAdapter {
         }
     }
 
-    fn download(&self, filename: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
+    fn download(filename: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
         for (artifact, metadata) in context.plan.artifacts_with_metadata() {
             if !is_registry(artifact, Registry::Pypi) {
                 continue;
@@ -189,7 +189,9 @@ fn wheel_metadata(
                 version.replace('-', "_")
             )
         });
-    if !valid_filename(&filename) || !filename.ends_with(".whl") {
+    if !valid_filename(&filename)
+        || RegistryArchive::from_filename(&filename) != Some(RegistryArchive::Wheel)
+    {
         return Err(format!("invalid wheel filename {filename:?}"));
     }
     Ok(WheelMetadata {
@@ -219,7 +221,9 @@ fn name_component(name: &str) -> String {
 
 fn choose_filename(explicit: Option<&str>, inferred: &str) -> Result<String, String> {
     let filename = explicit.unwrap_or(inferred);
-    if !valid_filename(filename) || !filename.ends_with(".whl") {
+    if !valid_filename(filename)
+        || RegistryArchive::from_filename(filename) != Some(RegistryArchive::Wheel)
+    {
         return Err(format!("invalid wheel filename {filename:?}"));
     }
     Ok(filename.to_owned())

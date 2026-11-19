@@ -8,6 +8,7 @@ mod pypi;
 use isolock_cas::{InMemoryCas, Sha256Digest};
 use isolock_core::Registry;
 use isolock_plan::AirlockPlan;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use cargo::CargoAdapter;
 pub use conda::CondaAdapter;
@@ -22,6 +23,15 @@ pub struct RegistryContext<'a> {
     pub cas: &'a InMemoryCas,
     /// Local origin used when registry metadata needs an absolute download URL.
     pub base_url: &'a str,
+    pub(crate) cancelled: &'a AtomicBool,
+}
+
+impl RegistryContext<'_> {
+    /// Adapters doing expensive work should check cancellation and return promptly.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
 }
 
 /// Response action returned by a registry adapter.
@@ -54,7 +64,56 @@ pub enum RegistryRouteAction {
     InvalidMetadata(String),
 }
 
+/// Ordered collection of adapters. Registration is independent of listener setup.
+#[derive(Default)]
+pub struct AdapterRegistry {
+    adapters: Vec<Box<dyn RegistryAdapter>>,
+}
+
+impl AdapterRegistry {
+    /// Creates an empty registry; unmatched requests receive 404, never upstream fallback.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends an adapter. Earlier adapters have route precedence.
+    pub fn register(&mut self, adapter: impl RegistryAdapter + 'static) -> &mut Self {
+        self.adapters.push(Box::new(adapter));
+        self
+    }
+
+    pub(crate) fn route(
+        &self,
+        method: &str,
+        path: &str,
+        context: &RegistryContext<'_>,
+    ) -> RegistryRouteAction {
+        self.adapters
+            .iter()
+            .map(|adapter| adapter.handle_route(method, path, context))
+            .find(|action| *action != RegistryRouteAction::NotFound)
+            .unwrap_or(RegistryRouteAction::NotFound)
+    }
+}
+
+/// Supplies the standard Conda, PyPI, npm, and Cargo adapters in route order.
+#[must_use]
+pub fn default_adapters() -> AdapterRegistry {
+    let mut registry = AdapterRegistry::new();
+    registry
+        .register(CondaAdapter)
+        .register(PypiAdapter)
+        .register(NpmAdapter)
+        .register(CargoAdapter);
+    registry
+}
+
 /// Unified contract for protocol adapters that synthesize registry responses.
+///
+/// Implementations must bound their work and cooperate with context cancellation.
+/// Rust cannot forcibly stop an arbitrary adapter: grace-expired workers are counted
+/// and detached, and explicit shutdown returns a timeout instead of blocking forever.
 pub trait RegistryAdapter: Send + Sync {
     /// The package registry ecosystem handled by this adapter.
     fn ecosystem(&self) -> Registry;

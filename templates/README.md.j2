@@ -14,11 +14,11 @@
 
 Build and test software hermetically without internet access or container daemons: resolve dependencies once, commit immutable artifacts to a Git orphan branch, and intercept native package managers through an ephemeral loopback proxy. Restore and activate full execution environments with a single pure POSIX shell script.
 
-> Status: active development `{{ version }}`. Core primitives, Content-Addressed Storage engine, and multi-ecosystem proxy adapters are implemented; protocol endpoints and CLI commands are under active milestone delivery.
+> Status: active development `{{ version }}`. M5 provides locked profile planning and offline materialization. M6 adds scoped CLI sessions, extensible registry composition, bounded proxy workers, and selected strict Clippy gates. See the [profile guide](docs/content/docs/profiles.mdx), [proxy limits](docs/content/docs/proxy.mdx), and [quality policy](docs/content/docs/quality.mdx) for supported behavior and explicit boundaries.
 
 | Crate / Tool | What it is | Description |
 | :-- | :-- | :-- |
-| [`isolock`](crates/isolock) | Main CLI binary | User-facing commands: `plan`, `cas`, `proxy`, `exec`, `bootstrap` |
+| [`isolock`](crates/isolock) | Main CLI binary | User-facing commands: `config`, `plan`, `fetch`, `sync`/`bootstrap`, `export`, `seed-manifest`, `gc`, `exec`, `serve` |
 | [`isolock-core`](crates/isolock-core) | Core domain types | Operational modes (`Connected`, `Ci`, `LocalAirlock`), Registry enum, and Semver validation |
 | [`isolock-cas`](crates/isolock-cas) | Content-Addressed Storage | SHA-256 digest addressability, large blob sharding (>95 MiB), and POSIX `cat` reassembly |
 | [`isolock-plan`](crates/isolock-plan) | Airlock plan engine | Lockfile plan diffing, immutable artifact manifest, and CI drift detection |
@@ -26,32 +26,40 @@ Build and test software hermetically without internet access or container daemon
 
 ## Quickstart
 
+After preparing reviewed `isolock.toml` profile intent and original artifacts as described
+in the [profile guide](docs/content/docs/profiles.mdx):
+
 ```sh
-# Install isolock (via pixi / conda-forge or cargo)
-pixi global install isolock
-# or: cargo install --path crates/isolock
+isolock config check
+isolock config explain storage.cas-dir
+isolock plan --profile rust-pixi --platform linux-64
+isolock seed-manifest --profile rust-pixi --platform linux-64
+isolock fetch --profile rust-pixi --platform linux-64
+isolock plan --profile rust-pixi --platform linux-64 --ci
+isolock sync --profile rust-pixi --platform linux-64 --locked --offline
+. .isolock/activate/rust-pixi-linux-64
+cargo build --locked --offline
 
-# Synchronize locked dependencies into the hermetic CAS plan
-isolock plan --sync
-
-# Run native builds hermetically through the loopback proxy (no double-dash needed)
-isolock exec cargo build --release
-isolock exec pixi run test
-isolock exec npm test
-
-# Restore an initialized airlock environment with pure POSIX shell
-sh .isolock/bootstrap.sh
-. .isolock/state/active/activate
+# Bootstrap uses reviewed seed manifests, not a preinstalled Pixi environment:
+sh .isolock/bootstrap.sh --profile rust-pixi --platform linux-64 --offline
 ```
+
+`sync` always requires a reviewed plan. It never obtains its seed Pixi from the prefix
+that Pixi creates. Directory transport is selective; the Git fallback explicitly reports
+its broader snapshot transfer. The legacy loopback proxy and positional environment
+bootstrap remain available for existing airlock plans.
 
 ## Develop
 
 ```sh
-cargo nextest run --workspace     # fast unit and integration tests
-cargo test --workspace            # BDD scenarios and property tests
-alint                             # repository policy and schema hygiene
-cargo clippy --workspace          # strict compiler and lint verification
-cargo deny check bans licenses    # supply chain and license audit
+bash scripts/restore.sh  # restore the reviewed developer tooling/Cargo vendor sandbox
+export PATH="$HOME/.local/bin:$PATH"
+pixi run --as-is --offline cargo nextest run --workspace --offline
+pixi run --as-is --offline cargo test --workspace --offline
+pixi run --as-is --offline cargo clippy --workspace --all-targets --offline -- -D warnings
+pixi run --as-is --offline cargo deny --offline check bans licenses sources
+pixi run --as-is --offline cargo fmt --check
+pixi run --as-is --offline sh scripts/coverage.sh
 ```
 
 ## Documentation

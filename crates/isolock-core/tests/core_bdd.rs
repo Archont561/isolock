@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 //! BDD scenario tests asserting the core contract using rstest-bdd.
 
 use isolock_core::{is_valid_semver, Semver, VERSION};

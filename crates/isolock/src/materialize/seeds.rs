@@ -5,6 +5,7 @@ use crate::profile_store::{self, Workspace};
 use isolock_cas::digest_file;
 use isolock_plan::profile::{ArchiveFormat, Artifact, ArtifactKind, ProfileManifest};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -114,9 +115,9 @@ pub fn launcher(
 ) -> Result<(), String> {
     let mut script = String::from("#!/bin/sh\n");
     for (key, value) in environment {
-        script.push_str(&format!("export {key}={}\n", payloads::quote_string(value)));
+        let _ = writeln!(script, "export {key}={}", payloads::quote_string(value));
     }
-    script.push_str(&format!("exec {} \"$@\"\n", payloads::quote(executable)));
+    let _ = writeln!(script, "exec {} \"$@\"", payloads::quote(executable));
     profile_store::write_file(path, script.as_bytes(), true)?;
     archive::executable(path)
 }
@@ -163,11 +164,12 @@ pub fn bootstrap_manifest(manifest: &ProfileManifest) -> Result<String, String> 
         }) {
             return Err("seed entry cannot be represented in the POSIX seed manifest".into());
         }
-        result.push_str(&format!(
-            "seed {name} {} {} {entry} {format}\n",
+        let _ = writeln!(
+            result,
+            "seed {name} {} {} {entry} {format}",
             artifact.digest.as_str(),
             artifact.filename
-        ));
+        );
     }
     Ok(result)
 }

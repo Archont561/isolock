@@ -1,7 +1,7 @@
 ---
 id: ISO-20
 title: Extensible proxy adapter composition and response state
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-18 11:00'
 labels: []
@@ -20,14 +20,22 @@ Separate default registry-adapter construction from proxy binding and replace in
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 `ProxyServer` accepts an injected adapter registry or builder and a public default factory supplies the current four adapters.
-- [ ] #2 Adding an adapter does not require editing loopback binding or HTTP server setup code.
-- [ ] #3 HTTP response classification uses an enum or equivalent closed representation; invalid simultaneous metadata/artifact state is unrepresentable.
-- [ ] #4 Compression, range transformation, and wire serialization are independently testable operations.
-- [ ] #5 Existing adapter and HTTP integration tests retain their registry response, Range, and Brotli behavior.
+- [x] #1 `ProxyServer` accepts an injected adapter registry or builder and a public default factory supplies the current four adapters.
+- [x] #2 Adding an adapter does not require editing loopback binding or HTTP server setup code.
+- [x] #3 HTTP response classification uses an enum or equivalent closed representation; invalid simultaneous metadata/artifact state is unrepresentable.
+- [x] #4 Compression, range transformation, and wire serialization are independently testable operations.
+- [x] #5 Existing adapter and HTTP integration tests retain their registry response, Range, and Brotli behavior.
 <!-- AC:END -->
 
 ## Notes
 
 - Addresses OCP and encapsulation findings in `crates/isolock-proxy/src/server.rs`.
 - Builds on the `RegistryAdapter` direction accepted in decision-4.
+
+## Implementation evidence
+
+Public `AdapterRegistry`, `default_adapters`, and `ProxyServer::bind_with_adapters` separate
+composition from binding. Socket tests add an extension adapter without listener edits.
+Closed metadata/artifact/text response state lives in `response.rs`; compression, borrowing
+Range transformation, and wire writes are independently exercised. Existing four-registry,
+Brotli, ETag, HEAD, and Range integration cases still pass.

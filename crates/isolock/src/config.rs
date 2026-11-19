@@ -1,5 +1,8 @@
 //! Configuration is loaded only at the CLI boundary. Values leave this module typed.
 
+mod execution;
+pub use execution::{ExecutionConfig, ProxyOverrides, ProxySettings};
+
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::value::{Dict, Map};
 use figment::{Figment, Metadata, Provider};
@@ -15,6 +18,7 @@ pub struct Settings {
     pub storage: Storage,
     pub profiles: BTreeMap<String, Profile>,
     pub gc: GarbageCollection,
+    pub proxy: ProxySettings,
 }
 
 impl Default for Settings {
@@ -24,6 +28,7 @@ impl Default for Settings {
             storage: Storage::default(),
             profiles: BTreeMap::new(),
             gc: GarbageCollection::default(),
+            proxy: ProxySettings::default(),
         }
     }
 }
@@ -81,6 +86,8 @@ pub struct Overrides {
     pub pixi_version: Option<String>,
     #[arg(long, global = true)]
     pub storage_ref: Option<String>,
+    #[command(flatten)]
+    pub proxy: ProxyOverrides,
 }
 
 struct Named<P> {
@@ -171,25 +178,41 @@ fn validate_user_configuration(path: &Path) -> Result<(), String> {
         .ok_or("user operational configuration must be a table")?;
     if object
         .keys()
-        .any(|key| !matches!(key.as_str(), "storage" | "gc"))
+        .any(|key| !matches!(key.as_str(), "storage" | "gc" | "proxy"))
         || object
             .get("storage")
             .and_then(serde_json::Value::as_object)
             .is_some_and(|storage| storage.keys().any(|key| key != "cas-dir"))
+        || object
+            .get("proxy")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|proxy| {
+                proxy
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "port" | "limits" | "cargo-home"))
+            })
     {
-        return Err("user configuration may only set operational CAS paths and GC roots".into());
+        return Err("user configuration may only set operational CAS paths, GC roots, and proxy paths/limits/port".into());
     }
     Ok(())
 }
 
 fn merge_environment(mut figment: Figment, profile: Option<&str>) -> Result<Figment, String> {
-    let variables = std::env::vars()
-        .map(|(key, _)| key)
+    let variables = std::env::vars_os()
+        .filter_map(|(key, _)| key.into_string().ok())
         .collect::<std::collections::BTreeSet<_>>();
     let mut mapped = BTreeMap::new();
     for variable in variables {
         let path = match variable.as_str() {
             "ISOLOCK_CAS_DIR" => Some("storage.cas-dir".into()),
+            "ISOLOCK_PLAN" => Some("proxy.plan".into()),
+            "ISOLOCK_MODE" => Some("proxy.mode".into()),
+            "ISOLOCK_PROXY_PORT" => Some("proxy.port".into()),
+            "ISOLOCK_CARGO_HOME" => Some("proxy.cargo-home".into()),
+            "ISOLOCK_PROXY_MAX_CONCURRENCY" => Some("proxy.limits.max-concurrency".into()),
+            "ISOLOCK_PROXY_HEADER_TIMEOUT_MS" => Some("proxy.limits.header-timeout-ms".into()),
+            "ISOLOCK_PROXY_WRITE_TIMEOUT_MS" => Some("proxy.limits.write-timeout-ms".into()),
+            "ISOLOCK_PROXY_SHUTDOWN_GRACE_MS" => Some("proxy.limits.shutdown-grace-ms".into()),
             "ISOLOCK_STORAGE_REF" => Some("storage.reference".into()),
             "ISOLOCK_PIXI_ENVIRONMENT" => Some(profile_key(profile, "environment")?),
             "ISOLOCK_PIXI_VERSION" => Some(profile_key(profile, "seeds.pixi.version")?),
@@ -253,7 +276,7 @@ fn merge_flags(mut figment: Figment, flags: &Overrides) -> Result<Figment, Strin
             name: "explicit CLI flag".into(),
         });
     }
-    Ok(figment)
+    execution::merge_flags(figment, &flags.proxy)
 }
 
 fn validate(settings: &Settings) -> Result<(), String> {
@@ -272,6 +295,7 @@ fn validate(settings: &Settings) -> Result<(), String> {
     {
         return Err("invalid storage reference".into());
     }
+    settings.proxy.validate()?;
     for root in &settings.gc.roots {
         identifier(root)?;
     }

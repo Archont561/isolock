@@ -5,7 +5,7 @@ use super::{
 use crate::MIME_APPLICATION_JSON;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use isolock_core::Registry;
+use isolock_core::{Registry, RegistryArchive};
 use isolock_plan::{PlannedArtifact, PlannedArtifactMetadata};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha512};
@@ -37,18 +37,18 @@ impl RegistryAdapter for NpmAdapter {
             if !valid_npm_name(package) || !valid_filename(filename) {
                 return RegistryRouteAction::BadRequest("invalid NPM tarball path".into());
             }
-            return self.download(package, filename, context);
+            return Self::download(package, filename, context);
         }
         let package = registry_path.trim_end_matches('/');
         if !valid_npm_name(package) {
             return RegistryRouteAction::BadRequest("invalid NPM package name".into());
         }
-        self.packument(package, context)
+        Self::packument(package, context)
     }
 }
 
 impl NpmAdapter {
-    fn packument(&self, package: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
+    fn packument(package: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
         let mut versions = Map::new();
         let mut found_package = false;
         let mut available_versions = Vec::new();
@@ -63,50 +63,10 @@ impl NpmAdapter {
                     filename: metadata.filename.clone().unwrap_or_default(),
                 };
             };
-            let mut package_json = match read_package_json(artifact, metadata) {
+            let package_json = match package_version(artifact, metadata, bytes, context.base_url) {
                 Ok(package_json) => package_json,
                 Err(error) => return RegistryRouteAction::InvalidMetadata(error),
             };
-            let Some(object) = package_json.as_object_mut() else {
-                return RegistryRouteAction::InvalidMetadata(
-                    "NPM package.json must contain a JSON object".into(),
-                );
-            };
-            let archive_name = object
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(package);
-            let archive_version = object
-                .get("version")
-                .and_then(Value::as_str)
-                .unwrap_or(&artifact.version);
-            if archive_name != package || archive_version != artifact.version {
-                return RegistryRouteAction::InvalidMetadata(format!(
-                    "package.json {}@{} does not match planned artifact {}@{}",
-                    archive_name, archive_version, artifact.name, artifact.version
-                ));
-            }
-            let filename =
-                match npm_filename(package, &artifact.version, metadata.filename.as_deref()) {
-                    Ok(filename) => filename,
-                    Err(error) => return RegistryRouteAction::InvalidMetadata(error),
-                };
-            let tarball_url = format!(
-                "{}/npm/{}/-/{}",
-                context.base_url,
-                encode_npm_package(package),
-                encode_segment(&filename)
-            );
-            let integrity = format!("sha512-{}", STANDARD.encode(Sha512::digest(bytes)));
-            object.insert("name".into(), Value::String(package.to_owned()));
-            object.insert("version".into(), Value::String(artifact.version.clone()));
-            object.insert(
-                "dist".into(),
-                json!({
-                    "tarball": tarball_url,
-                    "integrity": integrity,
-                }),
-            );
             available_versions.push(artifact.version.clone());
             versions.insert(artifact.version.clone(), package_json);
         }
@@ -133,7 +93,6 @@ impl NpmAdapter {
     }
 
     fn download(
-        &self,
         package: &str,
         filename: &str,
         context: &RegistryContext<'_>,
@@ -165,6 +124,51 @@ impl NpmAdapter {
             filename: filename.to_owned(),
         }
     }
+}
+
+fn package_version(
+    artifact: &PlannedArtifact,
+    metadata: &PlannedArtifactMetadata,
+    bytes: &[u8],
+    origin: &str,
+) -> Result<Value, String> {
+    let package = artifact.name.as_str();
+    let mut package_json = read_package_json(artifact, metadata)?;
+    let Some(object) = package_json.as_object_mut() else {
+        return Err("NPM package.json must contain a JSON object".into());
+    };
+    let archive_name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(package);
+    let archive_version = object
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or(&artifact.version);
+    if archive_name != package || archive_version != artifact.version {
+        return Err(format!(
+            "package.json {}@{} does not match planned artifact {}@{}",
+            archive_name, archive_version, artifact.name, artifact.version
+        ));
+    }
+    let filename = npm_filename(package, &artifact.version, metadata.filename.as_deref())?;
+    let tarball_url = format!(
+        "{}/npm/{}/-/{}",
+        origin,
+        encode_npm_package(package),
+        encode_segment(&filename)
+    );
+    let integrity = format!("sha512-{}", STANDARD.encode(Sha512::digest(bytes)));
+    object.insert("name".into(), Value::String(package.to_owned()));
+    object.insert("version".into(), Value::String(artifact.version.clone()));
+    object.insert(
+        "dist".into(),
+        json!({
+            "tarball": tarball_url,
+            "integrity": integrity,
+        }),
+    );
+    Ok(package_json)
 }
 
 fn valid_npm_name(name: &str) -> bool {
@@ -206,7 +210,9 @@ fn npm_filename(package: &str, version: &str, explicit: Option<&str>) -> Result<
         package.rsplit('/').next().unwrap_or(package)
     );
     let filename = explicit.unwrap_or(&inferred);
-    if !valid_filename(filename) || !filename.ends_with(".tgz") {
+    if !valid_filename(filename)
+        || RegistryArchive::from_filename(filename) != Some(RegistryArchive::Npm)
+    {
         return Err(format!("invalid NPM tarball filename {filename:?}"));
     }
     Ok(filename.to_owned())

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 #![cfg(unix)]
 
 use isolock_cas::Sha256Digest;
@@ -195,6 +196,7 @@ fn bootstrap_rejects_a_blob_that_does_not_match_the_manifest_digest() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // End-to-end fixture setup and lifecycle assertions stay together.
 fn bootstrap_remote_mode_fetches_storage_tree_without_checking_it_out() {
     let fixture = Fixture::new();
     let archive = create_toolchain_archive(&fixture.temp_root);

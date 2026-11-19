@@ -143,8 +143,10 @@ fn install_one(
             workspace,
             manifest,
             &derived,
-            stage.path(),
-            &destination,
+            launchers::Paths {
+                stage: stage.path(),
+                destination: &destination,
+            },
             prefixes,
         )?;
         archive::seal(stage.path(), digest.as_str())?;
@@ -226,21 +228,6 @@ fn publish_receipt(
                 .join(format!("{child}-{}.json", manifest.platform)),
         );
     }
-    let mut linked_artifacts: BTreeMap<String, Vec<Sha256Digest>> = BTreeMap::new();
-    for artifact in &manifest.artifacts {
-        let kind = match artifact.kind {
-            ArtifactKind::Conda => "conda-prefix",
-            ArtifactKind::Cargo => "cargo-vendor",
-            ArtifactKind::Wheel => "wheelhouse",
-            ArtifactKind::Javascript => "node-modules",
-            ArtifactKind::Seed => "seeds",
-            ArtifactKind::Runtime => "runtimes",
-        };
-        let digests = linked_artifacts.entry(kind.into()).or_default();
-        if !digests.contains(&artifact.digest) {
-            digests.push(artifact.digest.clone());
-        }
-    }
     let receipt = Receipt {
         schema_version: 1,
         manifest: digest,
@@ -254,7 +241,7 @@ fn publish_receipt(
             .unwrap_or_else(|| destination.into()),
         artifacts: &manifest.artifacts,
         materializers: &manifest.materializers,
-        linked_artifacts,
+        linked_artifacts: linked_artifacts(&manifest.artifacts),
         payloads: paths,
         derived_inputs: inputs,
     };
@@ -266,6 +253,25 @@ fn publish_receipt(
         &receipt,
         false,
     )
+}
+
+fn linked_artifacts(artifacts: &[Artifact]) -> BTreeMap<String, Vec<Sha256Digest>> {
+    let mut linked_artifacts: BTreeMap<String, Vec<Sha256Digest>> = BTreeMap::new();
+    for artifact in artifacts {
+        let kind = match artifact.kind {
+            ArtifactKind::Conda => "conda-prefix",
+            ArtifactKind::Cargo => "cargo-vendor",
+            ArtifactKind::Wheel => "wheelhouse",
+            ArtifactKind::Javascript => "node-modules",
+            ArtifactKind::Seed => "seeds",
+            ArtifactKind::Runtime => "runtimes",
+        };
+        let digests = linked_artifacts.entry(kind.into()).or_default();
+        if !digests.contains(&artifact.digest) {
+            digests.push(artifact.digest.clone());
+        }
+    }
+    linked_artifacts
 }
 
 fn runtime(workspace: &Workspace, artifact: &Artifact) -> Result<PathBuf, String> {

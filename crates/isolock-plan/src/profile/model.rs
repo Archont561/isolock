@@ -164,6 +164,10 @@ pub struct ProfileManifest {
 }
 
 impl ProfileManifest {
+    /// Compute this manifest’s canonical content identity.
+    ///
+    /// # Errors
+    /// Returns an error if the manifest cannot be serialized to canonical JSON.
     pub fn digest(&self) -> Result<Sha256Digest, String> {
         canonical_digest(self)
     }
@@ -177,6 +181,11 @@ impl ProfileManifest {
             .collect()
     }
 
+    /// Validate schema, specification, immutable storage, paths, and recorded digests.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported versions/providers, unsafe provenance/paths, invalid
+    /// derivation identities, or a configuration digest mismatch.
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != PROFILE_SCHEMA_VERSION {
             return Err("unsupported profile manifest schema version".into());
@@ -235,6 +244,10 @@ pub struct PlanRequest<'a> {
     pub storage: StorageIdentity,
 }
 
+/// Hash canonical, sorted JSON without depending on struct/map declaration order.
+///
+/// # Errors
+/// Returns an error if the supplied value cannot be serialized as JSON.
 pub fn canonical_digest(value: &impl Serialize) -> Result<Sha256Digest, String> {
     // serde_json's default map representation is sorted; normalize struct/map order alike.
     let value = serde_json::to_value(value).map_err(|error| error.to_string())?;
@@ -257,6 +270,10 @@ pub(super) fn configuration_digest(manifest: &ProfileManifest) -> Result<Sha256D
     ))
 }
 
+/// Validate a nonempty ASCII profile, platform, environment, or tool identifier.
+///
+/// # Errors
+/// Returns an error for empty/dot identifiers or bytes outside letters, digits, `._-`.
 pub fn identifier(value: &str) -> Result<(), String> {
     if value.is_empty()
         || matches!(value, "." | "..")
@@ -269,6 +286,10 @@ pub fn identifier(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a portable single-component artifact basename.
+///
+/// # Errors
+/// Returns an error for empty/dot names or bytes outside letters, digits, `._+-`.
 pub fn filename(value: &str) -> Result<(), String> {
     if value.is_empty()
         || matches!(value, "." | "..")
@@ -281,6 +302,10 @@ pub fn filename(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a nonempty project-relative path without traversal.
+///
+/// # Errors
+/// Returns an error for absolute paths, non-normal components, backslashes or control delimiters.
 pub fn relative_path(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.contains(['\0', '\n', '\r', '\\'])
@@ -294,6 +319,10 @@ pub fn relative_path(value: &str) -> Result<(), String> {
 }
 
 /// Never persist credentials or signed query parameters as artifact provenance.
+///
+/// # Errors
+/// Returns an error for empty sources, credentials in the authority, query/fragment
+/// parameters, or NUL/newline/carriage-return delimiters.
 pub fn public_source(value: &str) -> Result<(), String> {
     let authority = value
         .split("://")
@@ -312,6 +341,9 @@ pub fn public_source(value: &str) -> Result<(), String> {
 
 impl Profile {
     /// Resolve only the requested platform policy before normalizing/locking intent.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported selected platforms or undeclared/invalid platform-tools keys.
     pub fn resolve(&self, platform: &str) -> Result<Self, String> {
         if !self.platforms.iter().any(|value| value == platform) {
             return Err("profile does not support the selected platform".into());
@@ -339,6 +371,11 @@ impl Profile {
         Ok(profile)
     }
 
+    /// Validate resolved profile policy and pinned seed/runtime declarations.
+    ///
+    /// # Errors
+    /// Returns an error for unsafe identifiers/paths, incompatible platforms/tools, invalid
+    /// provider composition, missing seeds/lock policy, or credential-bearing provenance.
     pub fn validate(&self, name: &str, platform: &str) -> Result<(), String> {
         if !self.platform_tools.is_empty() {
             return self.resolve(platform)?.validate(name, platform);
@@ -366,6 +403,21 @@ impl Profile {
         for child in &self.compose {
             identifier(child)?;
         }
+        self.validate_provider()?;
+        if let Some(environment) = &self.environment {
+            identifier(environment)?;
+        }
+        if self.cargo_lock.is_some()
+            && (self.cargo.cargo_version.is_empty() || self.cargo.target.is_empty())
+        {
+            return Err(
+                "Cargo profiles require explicit cargo-version and target derivation policy".into(),
+            );
+        }
+        self.validate_tools(platform)
+    }
+
+    fn validate_provider(&self) -> Result<(), String> {
         if self.provider == Provider::Standalone
             && self.runtimes.contains_key("rust")
             && self.runtimes["rust"].format == ArchiveFormat::Raw
@@ -404,17 +456,7 @@ impl Profile {
         } else if self.pixi_lock.is_some() || self.environment.is_some() {
             return Err("only Pixi profiles may select a Pixi environment".into());
         }
-        if let Some(environment) = &self.environment {
-            identifier(environment)?;
-        }
-        if self.cargo_lock.is_some()
-            && (self.cargo.cargo_version.is_empty() || self.cargo.target.is_empty())
-        {
-            return Err(
-                "Cargo profiles require explicit cargo-version and target derivation policy".into(),
-            );
-        }
-        self.validate_tools(platform)
+        Ok(())
     }
 
     fn validate_tools(&self, platform: &str) -> Result<(), String> {
