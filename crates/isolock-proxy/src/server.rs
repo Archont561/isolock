@@ -179,6 +179,8 @@ impl ProxyServer {
                     if shutdown.load(Ordering::Acquire) {
                         break;
                     }
+                    // Accepted sockets may inherit nonblocking mode on some platforms.
+                    stream.set_nonblocking(false)?;
                     if workers.at_capacity() {
                         counters.reject();
                         // No queue, no worker, no registry evaluation; never contact upstream.
