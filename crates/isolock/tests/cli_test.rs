@@ -36,14 +36,15 @@ fn http_get(address: &str, path: &str) -> Vec<u8> {
 #[test]
 fn test_cli_version_flag() {
     let bin = env!("CARGO_BIN_EXE_isolock");
-    let output = Command::new(bin)
-        .arg("--version")
-        .output()
-        .expect("runs isolock --version");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), format!("isolock {}", isolock_core::VERSION));
+    for arguments in [&["--version"][..], &["plan", "--version"], &["serve", "-V"]] {
+        let output = Command::new(bin)
+            .args(arguments)
+            .output()
+            .expect("runs a non-exec version flag");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.trim(), format!("isolock {}", isolock_core::VERSION));
+    }
 }
 
 #[test]

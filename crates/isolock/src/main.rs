@@ -100,9 +100,8 @@ pub const EXIT_POLICY: ExitPolicy = ExitPolicy::standard();
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    if args
-        .first()
-        .is_some_and(|arg| arg == "--version" || arg == "-V")
+    if args.first().map(String::as_str) != Some("exec")
+        && args.iter().any(|arg| arg == "--version" || arg == "-V")
     {
         println!("isolock {VERSION}");
         return ExitCode::SUCCESS;
