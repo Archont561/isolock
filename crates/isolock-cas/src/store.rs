@@ -29,6 +29,9 @@ impl FileStore {
     }
 
     /// Missing is a cache miss; corruption is an error, never a cache miss.
+    ///
+    /// # Errors
+    /// Returns I/O, unsafe/non-file path, or digest mismatch errors; a missing blob is `Ok(false)`.
     pub fn verified(&self, digest: &Sha256Digest) -> Result<bool, CasError> {
         self.check_parents(digest)?;
         let path = self.path(digest);
@@ -51,15 +54,27 @@ impl FileStore {
         Ok(true)
     }
 
+    /// Publish verified bytes, returning whether a new blob was stored.
+    ///
+    /// # Errors
+    /// Returns the same path, I/O, or digest errors as [`Self::put_reader`].
     pub fn put_bytes(&self, digest: &Sha256Digest, bytes: &[u8]) -> Result<bool, CasError> {
         self.put_reader(digest, &mut io::Cursor::new(bytes))
     }
 
+    /// Stream a file into the store, returning whether a new blob was stored.
+    ///
+    /// # Errors
+    /// Returns source-file I/O errors or the errors documented by [`Self::put_reader`].
     pub fn put_file(&self, digest: &Sha256Digest, path: &Path) -> Result<bool, CasError> {
         self.put_reader(digest, &mut File::open(path)?)
     }
 
     /// Stage and verify before publishing with no-clobber semantics.
+    ///
+    /// # Errors
+    /// Returns reader/filesystem I/O, unsafe CAS path, or digest mismatch errors.
+    /// A corrupt existing blob is an error, not a cache miss or an overwrite opportunity.
     pub fn put_reader(
         &self,
         digest: &Sha256Digest,
@@ -130,6 +145,9 @@ impl FileStore {
     }
 
     /// Enumerate canonical blob paths only. Unexpected entries stop destructive GC.
+    ///
+    /// # Errors
+    /// Returns I/O or invalid-source errors for noncanonical entries, symlinks, or non-files.
     pub fn digests(&self) -> Result<BTreeSet<String>, CasError> {
         let mut result = BTreeSet::new();
         let root = self.root.join("sha256");
@@ -182,6 +200,10 @@ fn check_prefix(entry: &fs::DirEntry) -> Result<(), CasError> {
     Ok(())
 }
 
+/// Hash a file with a bounded heap buffer.
+///
+/// # Errors
+/// Returns an I/O error if opening or reading the file fails.
 pub fn digest_file(path: &Path) -> Result<Sha256Digest, CasError> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();

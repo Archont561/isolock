@@ -166,6 +166,10 @@ pub fn missing_artifacts(expected: &AirlockPlan, current: &AirlockPlan) -> Vec<P
 /// Generated package specifications are restricted to shell-safe characters because the
 /// workflow passes the `packages` input to its ingestion command. Registry names are checked
 /// against the choice values declared by `.github/workflows/isolock.yml`.
+///
+/// # Errors
+/// Returns an error for an unsupported registry or package/version that cannot safely
+/// be passed as workflow dispatch input.
 pub fn format_dispatch_commands(missing: &[PlannedArtifact]) -> Result<Vec<String>, String> {
     let mut grouped: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
 

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 use isolock_cas::Sha256Digest;
 use isolock_core::Registry;
 use isolock_plan::{AirlockPlan, PlannedArtifact, PlannedArtifactMetadata};
@@ -74,6 +75,7 @@ fn test_cli_default_usage_output() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // End-to-end fixture setup and lifecycle assertions stay together.
 fn test_cli_subcommands() {
     let bin = env!("CARGO_BIN_EXE_isolock");
 

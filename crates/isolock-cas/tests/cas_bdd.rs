@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 //! BDD scenario tests asserting CAS storage contracts.
 
 use isolock_cas::{InMemoryCas, Sha256Digest};

@@ -37,8 +37,8 @@ backlog/
 | **m-2** | Multi-Ecosystem Proxy Resolvers | `ISO-5`, `ISO-6`, `ISO-7` | Complete |
 | **m-3** | Lockfile Plan Drift and CI Airlock | `ISO-8`, `ISO-9` | Complete |
 | **m-4** | CLI Execution and Environment Bootstrap | `ISO-10`, `ISO-11` | Complete |
-| **m-5** | Profiled Environment Materialization and Configuration | `ISO-13` through `ISO-18` | Planned |
-| **m-6** | Code Quality and Proxy Resilience | `ISO-19` through `ISO-22` | Planned |
+| **m-5** | Profiled Environment Materialization and Configuration | `ISO-13` through `ISO-18` | Complete |
+| **m-6** | Code Quality and Proxy Resilience | `ISO-19` through `ISO-22` | Complete |
 
 ---
 
@@ -82,3 +82,4 @@ backlog/
 - **[Profiled Environment Materialization](features/profiled-environment-materialization.feature)**
 - **[Profile Configuration](features/profile-configuration.feature)**
 - **[Proxy Resource Bounds](features/proxy-resource-bounds.feature)**
+- **[Execution Sessions](features/execution-sessions.feature)**

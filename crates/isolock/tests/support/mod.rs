@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 #![allow(dead_code)]
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -7,6 +8,7 @@ use isolock_plan::profile::{
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -97,7 +99,7 @@ impl Fixture {
         let source = "https://channel.invalid/selected";
         let mut lock = String::from("version: 6\nenvironments:\n");
         for (environment, name) in [("rust", "rust"), ("python", "python"), ("ts", "bun")] {
-            lock.push_str(&format!("  {environment}:\n    channels:\n    - url: {source}/\n    packages:\n      linux-64:\n      - conda: {source}/linux-64/{name}-1.0.0-0.tar.bz2\n"));
+            let _ = writeln!(lock, "  {environment}:\n    channels:\n    - url: {source}/\n    packages:\n      linux-64:\n      - conda: {source}/linux-64/{name}-1.0.0-0.tar.bz2");
         }
         lock.push_str("packages:\n");
         for (name, digest, size) in [
@@ -105,10 +107,11 @@ impl Fixture {
             ("python", &conda_python, python_archive.len()),
             ("bun", &conda_bun, bun_archive.len()),
         ] {
-            lock.push_str(&format!(
-                "- conda: {source}/linux-64/{name}-1.0.0-0.tar.bz2\n  sha256: {}\n  size: {size}\n",
+            let _ =
+                writeln!(lock,
+                "- conda: {source}/linux-64/{name}-1.0.0-0.tar.bz2\n  sha256: {}\n  size: {size}",
                 digest.as_str()
-            ));
+            );
         }
         fs::write(fixture.root.join("pixi.lock"), lock).unwrap();
         fs::write(fixture.root.join("pixi.toml"), format!("[workspace]\nname=\"fixture\"\nchannels=[\"{source}\"]\nplatforms=[\"linux-64\"]\n[feature.rust.dependencies]\nrust=\"==1.0.0\"\n[feature.python.dependencies]\npython=\"==1.0.0\"\n[feature.ts.dependencies]\nbun=\"==1.0.0\"\n[environments]\nrust=[\"rust\"]\npython=[\"python\"]\nts=[\"ts\"]\n")).unwrap();

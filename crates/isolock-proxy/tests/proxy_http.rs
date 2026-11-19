@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 //! Wire-level contract tests for all registry protocols and the shared server.
 
 use base64::engine::general_purpose::STANDARD;
@@ -229,6 +230,7 @@ fn pypi_pep691_serves_hashes_requires_python_and_brotli_metadata() {
 }
 
 #[test]
+#[allow(clippy::cognitive_complexity)] // One protocol fixture verifies canonical/mirrored metadata and raw downloads.
 fn conda_repodata_and_download_use_canonical_records_and_raw_bytes() {
     let proxy = test_proxy();
     let expected_bytes = proxy

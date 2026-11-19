@@ -9,7 +9,7 @@
 
 Build and test software hermetically without internet access or container daemons: resolve dependencies once, commit immutable artifacts to a Git orphan branch, and intercept native package managers through an ephemeral loopback proxy. Restore and activate full execution environments with a single pure POSIX shell script.
 
-> Status: active development `0.1.0`. M5 adds typed, locked profile planning, verified seeds, offline Pixi/standalone materialization, selective directory transport, and manifest-rooted GC. See the [profile guide](docs/content/docs/profiles.mdx) for supported inputs and explicit fail-closed boundaries.
+> Status: active development `0.1.0`. M5 provides locked profile planning and offline materialization. M6 adds scoped CLI sessions, extensible registry composition, bounded proxy workers, and selected strict Clippy gates. See the [profile guide](docs/content/docs/profiles.mdx), [proxy limits](docs/content/docs/proxy.mdx), and [quality policy](docs/content/docs/quality.mdx) for supported behavior and explicit boundaries.
 
 | Crate / Tool | What it is | Description |
 | :-- | :-- | :-- |

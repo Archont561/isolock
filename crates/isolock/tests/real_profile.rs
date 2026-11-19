@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 //! Opt-in integration with tools restored from the reviewed developer sandbox.
 //! CI supplies explicit profile/platform and tool paths; these tests never download.
 #![cfg(target_os = "linux")]
@@ -13,6 +14,7 @@ use support::{archive, text, Fixture, PLATFORM, RUST_PROFILE};
 
 #[test]
 #[ignore = "requires ISOLOCK_TEST_PIXI from the restored developer sandbox"]
+#[allow(clippy::too_many_lines)] // End-to-end fixture setup and lifecycle assertions stay together.
 fn real_pixi_restores_the_selected_profile_from_a_cold_offline_cache() {
     assert_eq!(std::env::var("ISOLOCK_TEST_PROFILE").unwrap(), RUST_PROFILE);
     assert_eq!(std::env::var("ISOLOCK_TEST_PLATFORM").unwrap(), PLATFORM);

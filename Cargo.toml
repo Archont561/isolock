@@ -14,6 +14,8 @@ edition = "2021"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["Archont561"]
+keywords = ["air-gap", "offline", "cas", "reproducible", "dependencies"]
+categories = ["development-tools::build-utils"]
 repository = "https://github.com/Archont561/isolock"
 
 [workspace.dependencies]
@@ -55,3 +57,17 @@ unused_workspace_dependencies = "allow"
 [workspace.lints.clippy]
 cognitive_complexity = "warn"
 too_many_lines = "warn"
+too_many_arguments = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+format_push_string = "warn"
+map_unwrap_or = "warn"
+filter_map_next = "warn"
+unused_self = "warn"
+cast_possible_truncation = "warn"
+large_stack_arrays = "warn"
+missing_errors_doc = "warn"
+case_sensitive_file_extension_comparisons = "warn"

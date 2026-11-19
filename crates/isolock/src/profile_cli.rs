@@ -6,6 +6,7 @@ use isolock_cas::Sha256Digest;
 use isolock_plan::profile::{build_profiles, changed_input, PlanRequest, ProfileManifest};
 use profile_store::{StoreLease, Workspace};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -191,8 +192,10 @@ fn execute(
                 settings,
                 profile,
                 platform,
-                offline,
-                manifest.as_deref(),
+                SyncOptions {
+                    offline,
+                    digest: manifest.as_deref(),
+                },
             )?;
         }
         Operation::Export { output } => {
@@ -249,14 +252,19 @@ fn plan(
     Ok(())
 }
 
+struct SyncOptions<'a> {
+    offline: bool,
+    digest: Option<&'a str>,
+}
+
 fn sync(
     workspace: &Workspace,
     settings: &config::Settings,
     profile: &str,
     platform: &str,
-    offline: bool,
-    digest: Option<&str>,
+    options: SyncOptions<'_>,
 ) -> Result<(), String> {
+    let SyncOptions { offline, digest } = options;
     let host = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "linux-64",
         ("linux", "aarch64") => "linux-aarch64",
@@ -430,10 +438,11 @@ fn report_missing(
                 )
             })
             .collect::<std::collections::BTreeSet<_>>();
-        report.push_str(&format!(
-            "- {digest} {}\n",
+        let _ = writeln!(
+            report,
+            "- {digest} {}",
             labels.into_iter().collect::<Vec<_>>().join(", ")
-        ));
+        );
     }
     Err(report.trim_end().into())
 }

@@ -44,6 +44,9 @@ impl Sha256Digest {
     }
 
     /// Validates and constructs a SHA-256 digest from a hexadecimal string.
+    ///
+    /// # Errors
+    /// Returns an error unless the input contains exactly 64 hexadecimal characters.
     pub fn parse(s: &str) -> Result<Self, &'static str> {
         if s.len() != 64 {
             return Err("SHA-256 digest must be exactly 64 hexadecimal characters");
@@ -81,6 +84,9 @@ impl InMemoryCas {
     }
 
     /// Stores content only when its bytes match the supplied SHA-256 digest.
+    ///
+    /// # Errors
+    /// Returns `CasError::DigestMismatch` without inserting when the supplied digest is wrong.
     pub fn insert(&mut self, digest: Sha256Digest, content: Vec<u8>) -> Result<(), CasError> {
         let actual = Sha256Digest::from_bytes(&content);
         if actual != digest {

@@ -10,6 +10,10 @@ use isolock_cas::Sha256Digest;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Build the selected manifest and its constituent objects, without reading environment variables.
+///
+/// # Errors
+/// Returns errors for invalid profile/platform/composition, unsafe or unreadable lock inputs,
+/// unsupported lockfile entries, inconsistent catalog metadata, or manifest serialization.
 pub fn build_profiles(
     request: &PlanRequest<'_>,
 ) -> Result<BTreeMap<String, ProfileManifest>, String> {
@@ -207,6 +211,9 @@ fn append_tools(
 }
 
 /// Identify a changed locked field without printing potentially sensitive values.
+///
+/// # Errors
+/// Returns an error if either manifest cannot be represented as canonical JSON.
 pub fn changed_input(
     expected: &ProfileManifest,
     actual: &ProfileManifest,

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 #![cfg(unix)]
 
 mod support;
@@ -138,6 +139,38 @@ fn local_cache(world: &World) {
 #[then("the resolved artifact closure remains unchanged")]
 fn unchanged_closure(world: &World) {
     assert!(text(world.output.borrow().as_ref().unwrap()).contains("locked inputs match"));
+}
+
+#[when("a developer overrides proxy concurrency and deadlines")]
+fn proxy_limits_override(world: &World) {
+    let path = world
+        .project
+        .root
+        .join(format!(".isolock/plans/{RUST_PROFILE}-{PLATFORM}.lock"));
+    let before = fs::read(&path).unwrap();
+    let output = world
+        .project
+        .command(&[
+            "plan",
+            "--profile",
+            RUST_PROFILE,
+            "--platform",
+            PLATFORM,
+            "--ci",
+        ])
+        .env("ISOLOCK_PROXY_MAX_CONCURRENCY", "17")
+        .env("ISOLOCK_PROXY_HEADER_TIMEOUT_MS", "250")
+        .env("ISOLOCK_PROXY_WRITE_TIMEOUT_MS", "500")
+        .env("ISOLOCK_PROXY_SHUTDOWN_GRACE_MS", "100")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output));
+    assert_eq!(
+        fs::read(path).unwrap(),
+        before,
+        "operational settings must not change serialized plans or artifact digests"
+    );
+    *world.output.borrow_mut() = Some(output);
 }
 
 #[given("a project declares Pixi environments named {rust:string}, {python:string}, and {typescript:string}")]
@@ -351,5 +384,13 @@ fn bdd_offline_pixi(world: World) {
     index = 2
 )]
 fn bdd_shared_cargo(world: World) {
+    let _ = world;
+}
+
+#[scenario(
+    path = "../../backlog/features/profile-configuration.feature",
+    index = 3
+)]
+fn bdd_proxy_limits_do_not_change_locked_identity(world: World) {
     let _ = world;
 }

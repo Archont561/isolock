@@ -4,17 +4,24 @@ use super::{archive, executable, payloads, seeds, Derived};
 use crate::profile_store::{self, Workspace};
 use isolock_plan::profile::{ArtifactKind, ProfileManifest, Provider};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy)]
+pub(super) struct Paths<'a> {
+    pub stage: &'a Path,
+    pub destination: &'a Path,
+}
 
 pub(super) fn create(
     workspace: &Workspace,
     manifest: &ProfileManifest,
     derived: &Derived,
-    stage: &Path,
-    destination: &Path,
+    paths: Paths<'_>,
     prefixes: &BTreeMap<String, PathBuf>,
 ) -> Result<(), String> {
+    let Paths { stage, destination } = paths;
     let bin = stage.join("bin");
     fs::create_dir_all(&bin).map_err(|error| error.to_string())?;
     let mut environment = environment(workspace, manifest, derived, stage, destination)?;
@@ -33,14 +40,7 @@ pub(super) fn create(
             seeds::launcher(&bin.join("pixi"), pixi, &BTreeMap::new())?;
         }
         rust_bins(&bin, derived, manifest, &mut environment)?;
-        python_bins(
-            workspace,
-            manifest,
-            derived,
-            stage,
-            destination,
-            &environment,
-        )?;
+        python_bins(workspace, manifest, derived, paths, &environment)?;
         javascript_bins(&bin, derived, manifest, destination, &environment)?;
     }
     let activation = format!(
@@ -149,10 +149,10 @@ fn python_bins(
     workspace: &Workspace,
     manifest: &ProfileManifest,
     derived: &Derived,
-    stage: &Path,
-    destination: &Path,
+    paths: Paths<'_>,
     environment: &BTreeMap<String, String>,
 ) -> Result<(), String> {
+    let Paths { stage, destination } = paths;
     let Some(python) = derived
         .runtimes
         .get("python")
@@ -247,15 +247,13 @@ fn bun_launcher(
 ) -> Result<(), String> {
     let mut script = String::from("#!/bin/sh\n");
     for (name, value) in environment {
-        script.push_str(&format!(
-            "export {name}={}\n",
-            payloads::quote_string(value)
-        ));
+        let _ = writeln!(script, "export {name}={}", payloads::quote_string(value));
     }
-    let bins = javascript
-        .map(|path| path.join("node_modules/.bin"))
-        .unwrap_or_else(|| PathBuf::from("/nonexistent-isolock-bin"));
-    script.push_str(&format!("case \"${{1:-}}\" in\n x|exec) shift; name=${{1:-}}; case \"$name\" in ''|*[!A-Za-z0-9._-]*) echo 'isolock bun x: expected a restored executable name' >&2; exit 1;; esac; shift; [ -f {}/\"$name\" ] || {{ echo 'isolock bun x: package is not in the locked profile' >&2; exit 1; }}; exec {}/\"$name\" \"$@\" ;;\n add|install|update|create|remove|link|unlink|pm) echo 'isolock bun: package resolution is disabled; update the profile lock instead' >&2; exit 1 ;;\nesac\nexec {} --no-install \"$@\"\n", payloads::quote(&bins), payloads::quote(&bins), payloads::quote(runtime)));
+    let bins = javascript.map_or_else(
+        || PathBuf::from("/nonexistent-isolock-bin"),
+        |path| path.join("node_modules/.bin"),
+    );
+    let _ = writeln!(script, "case \"${{1:-}}\" in\n x|exec) shift; name=${{1:-}}; case \"$name\" in ''|*[!A-Za-z0-9._-]*) echo 'isolock bun x: expected a restored executable name' >&2; exit 1;; esac; shift; [ -f {}/\"$name\" ] || {{ echo 'isolock bun x: package is not in the locked profile' >&2; exit 1; }}; exec {}/\"$name\" \"$@\" ;;\n add|install|update|create|remove|link|unlink|pm) echo 'isolock bun: package resolution is disabled; update the profile lock instead' >&2; exit 1 ;;\nesac\nexec {} --no-install \"$@\"", payloads::quote(&bins), payloads::quote(&bins), payloads::quote(runtime));
     script_file(path, &script)
 }
 

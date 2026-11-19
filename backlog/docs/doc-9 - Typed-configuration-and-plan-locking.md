@@ -52,3 +52,15 @@ Secrets are never serialized into plans, manifests, or `config show`. Registry c
 ### Schema Evolution
 
 The project configuration carries an integer schema version. Isolock rejects unsupported future schemas and provides migration diagnostics for retired keys. Unknown keys are rejected by default to prevent typographical changes from silently weakening an airlock policy.
+
+### M6 Proxy Boundary
+
+Legacy `serve`, `exec`, and plan/CAS loading now consume resolved typed settings too.
+`[proxy]` configures plan/Cargo-home paths, mode, and local port; `[proxy.limits]` holds
+bounded concurrency and absolute socket/shutdown deadlines. Port, paths, and limits are
+operational and excluded from profile/artifact identity. User operational defaults may
+set proxy port, Cargo home, and limits, but cannot change the expected plan or proxy mode.
+The public proxy crate receives a `ProxyConfig` and never reads environment variables.
+
+See the [proxy guide](../../docs/content/docs/proxy.mdx) for defaults, environment aliases,
+overload handling, cancellation, and explicit accounting for grace-expired adapters.

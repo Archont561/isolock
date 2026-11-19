@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 //! Behavioral coverage for large-blob sharding and POSIX reassembly.
 
 use isolock_cas::{
@@ -68,19 +69,19 @@ fn when_oversized_artifact_is_ingested(world: &ShardingWorld) {
     let expected_size = SHARD_SIZE_BYTES + 1;
     let mut source = File::create(&source_path).expect("create source artifact");
     let mut hasher = Sha256::new();
-    let mut block = [0_u8; 64 * 1024];
+    let mut block = vec![0_u8; 64 * 1024].into_boxed_slice();
     for (index, byte) in block.iter_mut().enumerate() {
-        *byte = (index.wrapping_mul(31) % 251) as u8;
+        *byte = u8::try_from(index.wrapping_mul(31) % 251).unwrap();
     }
 
     let mut remaining = expected_size;
     while remaining > 0 {
-        let length = remaining.min(block.len() as u64) as usize;
+        let length = usize::try_from(remaining.min(u64::try_from(block.len()).unwrap())).unwrap();
         source
             .write_all(&block[..length])
             .expect("write source artifact");
         hasher.update(&block[..length]);
-        remaining -= length as u64;
+        remaining -= u64::try_from(length).unwrap();
     }
     source.flush().expect("flush source artifact");
     drop(source);
@@ -251,7 +252,7 @@ fn concatenate_parts(parts: &[PathBuf], destination: &Path) -> io::Result<()> {
 fn digest_file(path: &Path) -> io::Result<(u64, Sha256Digest)> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
     let mut size = 0_u64;
     loop {
         let length = file.read(&mut buffer)?;
@@ -269,8 +270,8 @@ fn digest_file(path: &Path) -> io::Result<(u64, Sha256Digest)> {
 fn files_equal(left_path: &Path, right_path: &Path) -> io::Result<bool> {
     let mut left = File::open(left_path)?;
     let mut right = File::open(right_path)?;
-    let mut left_buffer = [0_u8; 64 * 1024];
-    let mut right_buffer = [0_u8; 64 * 1024];
+    let mut left_buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+    let mut right_buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
     loop {
         let left_length = read_block(&mut left, &mut left_buffer)?;
         let right_length = read_block(&mut right, &mut right_buffer)?;

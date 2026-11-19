@@ -247,7 +247,9 @@ fn pinned_wheel(line: &str, entries: &[CatalogEntry], platform: &str) -> Result<
         ));
     }
     let artifact = catalog_artifact(matches[0], ArtifactKind::Wheel)?;
-    if !artifact.filename.ends_with(".whl") {
+    if isolock_core::RegistryArchive::from_filename(&artifact.filename)
+        != Some(isolock_core::RegistryArchive::Wheel)
+    {
         return Err("offline PyPI profiles require built wheels, not source distributions".into());
     }
     Ok(artifact)
@@ -397,6 +399,10 @@ fn javascript_artifact(
     Ok(artifact)
 }
 
+/// Verify recorded artifact integrity in addition to the canonical CAS SHA-256.
+///
+/// # Errors
+/// Returns an error for invalid/unsupported integrity algorithms or a digest mismatch.
 pub fn verify_integrity(artifact: &Artifact, bytes: &[u8]) -> Result<(), String> {
     if Sha256Digest::from_bytes(bytes) != artifact.digest {
         return Err("artifact SHA-256 mismatch".into());

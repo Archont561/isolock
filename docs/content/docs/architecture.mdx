@@ -21,3 +21,15 @@ crates/
 1. **Zero Network Leakage**: In `Ci` and `LocalAirlock` operational modes, un-cached dependency requests result in an immediate fail-closed airlock violation.
 2. **Deterministic Digests**: Every artifact stored in CAS is verified against lowercase 64-hex SHA-256 hashes.
 3. **Drift Immunity**: Plan verification compares expected against current lockfiles to prevent stealth dependency tampering.
+
+## Execution and proxy ownership
+
+The CLI resolves configuration once at its Figment boundary. `proxy_cli` owns parsing and
+orchestration; `ExecutionSession` owns proxy/Pixi-file lifetime; Cargo and Pixi generators,
+child-environment contributions, input loading, and exit mapping have separate modules.
+Core planning, CAS, and proxy crates never read operational process configuration.
+
+`default_adapters` owns registry composition, while the server owns loopback admission and
+routing. Separate request, response, and resource modules implement HTTP parsing, closed
+response classification/transforms, absolute socket deadlines, and bounded worker accounting.
+See [proxy execution and limits](./proxy) and the [Rust quality policy](./quality).

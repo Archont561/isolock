@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 //! BDD scenario tests asserting airlock plan drift detection contracts.
 
 use isolock_cas::Sha256Digest;

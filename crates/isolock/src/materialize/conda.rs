@@ -49,6 +49,19 @@ pub fn install(
             return Err("refusing to overwrite an unmanaged Pixi environment; move it aside before restoring the profile".into());
         }
     }
+    run_pixi(workspace, manifest, pixi, &project, environment)?;
+    verify_prefix(&prefix, manifest)?;
+    seeds::link(&prefix, &public_prefix)?;
+    Ok(public_prefix)
+}
+
+fn run_pixi(
+    workspace: &Workspace,
+    manifest: &ProfileManifest,
+    pixi: &Path,
+    project: &Path,
+    environment: &str,
+) -> Result<(), String> {
     // No user/project Pixi config or remote URLs are inherited by this derived workspace.
     let config = project.join("pixi-config.toml");
     profile_store::write_file(&config, b"offline = true\n", true)?;
@@ -88,9 +101,7 @@ pub fn install(
     if !status.success() {
         return Err("locked offline Pixi materialization failed".into());
     }
-    verify_prefix(&prefix, manifest)?;
-    seeds::link(&prefix, &public_prefix)?;
-    Ok(public_prefix)
+    Ok(())
 }
 
 fn channels(workspace: &Workspace, manifest: &ProfileManifest) -> Result<PathBuf, String> {
@@ -122,9 +133,11 @@ fn channels(workspace: &Workspace, manifest: &ProfileManifest) -> Result<PathBuf
         }
     }
     for ((channel, subdir), packages) in records {
-        let (conda, legacy): (BTreeMap<_, _>, BTreeMap<_, _>) = packages
-            .into_iter()
-            .partition(|(name, _)| name.ends_with(".conda"));
+        let (conda, legacy): (BTreeMap<_, _>, BTreeMap<_, _>) =
+            packages.into_iter().partition(|(name, _)| {
+                isolock_core::RegistryArchive::from_filename(name)
+                    == Some(isolock_core::RegistryArchive::Conda)
+            });
         let repodata = serde_json::json!({"repodata_version": 2, "info": {"subdir": subdir}, "packages": legacy, "packages.conda": conda, "removed": []});
         profile_store::write_json(
             &stage
@@ -253,32 +266,7 @@ fn derive_workspace(
         package["conda"] = location.into();
         packages.push(package);
     }
-    let toml = toml::Value::Table(toml::value::Table::from_iter([
-        (
-            "workspace".into(),
-            toml::Value::Table(toml::value::Table::from_iter([
-                ("name".into(), "isolock-selected".into()),
-                (
-                    "channels".into(),
-                    toml::Value::Array(
-                        channel_urls.iter().map(|url| url.as_str().into()).collect(),
-                    ),
-                ),
-                (
-                    "platforms".into(),
-                    toml::Value::Array(vec![manifest.platform.as_str().into()]),
-                ),
-            ])),
-        ),
-        ("dependencies".into(), toml::Value::Table(dependencies)),
-        (
-            "environments".into(),
-            toml::Value::Table(toml::value::Table::from_iter([(
-                environment.into(),
-                toml::Value::Array(vec![]),
-            )])),
-        ),
-    ]));
+    let toml = workspace_manifest(environment, &manifest.platform, &channel_urls, dependencies);
     // Pixi validates its implicit default environment too, even when installing a
     // named environment. It references the exact same closure and is never installed.
     let selected = serde_json::json!({"channels": channel_urls.into_iter().map(|url| serde_json::json!({"url":url})).collect::<Vec<_>>(), "packages": { &manifest.platform: locations }});
@@ -293,6 +281,40 @@ fn derive_workspace(
         true,
     )?;
     profile_store::write_json(&project.join("pixi.lock"), &lock, true)
+}
+
+fn workspace_manifest(
+    environment: &str,
+    platform: &str,
+    channel_urls: &BTreeSet<String>,
+    dependencies: toml::value::Table,
+) -> toml::Value {
+    toml::Value::Table(toml::value::Table::from_iter([
+        (
+            "workspace".into(),
+            toml::Value::Table(toml::value::Table::from_iter([
+                ("name".into(), "isolock-selected".into()),
+                (
+                    "channels".into(),
+                    toml::Value::Array(
+                        channel_urls.iter().map(|url| url.as_str().into()).collect(),
+                    ),
+                ),
+                (
+                    "platforms".into(),
+                    toml::Value::Array(vec![platform.into()]),
+                ),
+            ])),
+        ),
+        ("dependencies".into(), toml::Value::Table(dependencies)),
+        (
+            "environments".into(),
+            toml::Value::Table(toml::value::Table::from_iter([(
+                environment.into(),
+                toml::Value::Array(vec![]),
+            )])),
+        ),
+    ]))
 }
 
 fn file_url(path: &Path) -> Result<String, String> {

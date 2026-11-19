@@ -19,3 +19,8 @@ Feature: Typed profile configuration and locked planning
     When a developer sets ISOLOCK_CAS_DIR to a writable local cache directory
     Then Isolock uses the local cache directory
     And the resolved artifact closure remains unchanged
+
+  Scenario: Proxy resource limits are operational rather than locked inputs
+    Given profile "rust-pixi" has a generated locked plan
+    When a developer overrides proxy concurrency and deadlines
+    Then the resolved artifact closure remains unchanged

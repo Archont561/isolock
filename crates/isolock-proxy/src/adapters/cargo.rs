@@ -1,6 +1,6 @@
 use super::{decoded_path, is_registry, RegistryAdapter, RegistryContext, RegistryRouteAction};
 use crate::MIME_APPLICATION_JSON;
-use isolock_core::Registry;
+use isolock_core::{Registry, RegistryArchive};
 use isolock_plan::{PlannedArtifact, PlannedArtifactMetadata};
 use serde_json::{json, Map, Value};
 use tame_index::{IndexKrate, IndexVersion, KrateName, Version};
@@ -40,17 +40,17 @@ impl RegistryAdapter for CargoAdapter {
             };
         }
         if let Some(download_path) = path.strip_prefix("/cargo/api/v1/crates/") {
-            return self.download(download_path, context);
+            return Self::download(download_path, context);
         }
         if let Some(index_path) = path.strip_prefix("/cargo/") {
-            return self.index(index_path, context);
+            return Self::index(index_path, context);
         }
         RegistryRouteAction::NotFound
     }
 }
 
 impl CargoAdapter {
-    fn index(&self, requested_path: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
+    fn index(requested_path: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
         if requested_path.is_empty() || requested_path.contains("..") {
             return RegistryRouteAction::BadRequest("invalid Cargo sparse index path".into());
         }
@@ -107,7 +107,7 @@ impl CargoAdapter {
         }
     }
 
-    fn download(&self, download_path: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
+    fn download(download_path: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
         let parts = download_path.split('/').collect::<Vec<_>>();
         if parts.len() != 3 || parts[2] != "download" || parts[0].is_empty() || parts[1].is_empty()
         {
@@ -125,7 +125,10 @@ impl CargoAdapter {
                 .filename
                 .clone()
                 .unwrap_or_else(|| cargo_filename(artifact));
-            if !filename.ends_with(".crate") || filename.contains('/') || filename.contains('\\') {
+            if RegistryArchive::from_filename(&filename) != Some(RegistryArchive::Cargo)
+                || filename.contains('/')
+                || filename.contains('\\')
+            {
                 return RegistryRouteAction::InvalidMetadata(format!(
                     "invalid Cargo archive filename {filename:?}"
                 ));

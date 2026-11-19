@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 //! BDD scenario tests asserting proxy routing contracts.
 
 use isolock_core::AirlockMode;

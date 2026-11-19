@@ -3,7 +3,7 @@ use super::{
     RegistryRouteAction,
 };
 use crate::MIME_APPLICATION_JSON;
-use isolock_core::Registry;
+use isolock_core::{Registry, RegistryArchive};
 use isolock_plan::{PlannedArtifact, PlannedArtifactMetadata};
 use rattler_conda_types::{package::IndexJson, PackageRecord, RepoData};
 use serde_json::{json, Map, Value};
@@ -49,12 +49,15 @@ impl RegistryAdapter for CondaAdapter {
             .collect::<Vec<_>>()
             .join("/");
         match resource {
-            "repodata.json" | "current_repodata.json" => self.repodata(&channel, subdir, context),
+            "repodata.json" | "current_repodata.json" => Self::repodata(&channel, subdir, context),
             filename
                 if valid_filename(filename)
-                    && (filename.ends_with(".conda") || filename.ends_with(".tar.bz2")) =>
+                    && matches!(
+                        RegistryArchive::from_filename(filename),
+                        Some(RegistryArchive::Conda | RegistryArchive::CondaLegacy)
+                    ) =>
             {
-                self.download(subdir, filename, context)
+                Self::download(subdir, filename, context)
             }
             _ => RegistryRouteAction::NotFound,
         }
@@ -62,12 +65,7 @@ impl RegistryAdapter for CondaAdapter {
 }
 
 impl CondaAdapter {
-    fn repodata(
-        &self,
-        channel: &str,
-        subdir: &str,
-        context: &RegistryContext<'_>,
-    ) -> RegistryRouteAction {
+    fn repodata(channel: &str, subdir: &str, context: &RegistryContext<'_>) -> RegistryRouteAction {
         let mut legacy = Map::new();
         let mut conda = Map::new();
 
@@ -94,7 +92,7 @@ impl CondaAdapter {
                 Ok(record) => record,
                 Err(error) => return RegistryRouteAction::InvalidMetadata(error.to_string()),
             };
-            if filename.ends_with(".conda") {
+            if RegistryArchive::from_filename(&filename) == Some(RegistryArchive::Conda) {
                 conda.insert(filename, record_value);
             } else {
                 legacy.insert(filename, record_value);
@@ -131,7 +129,6 @@ impl CondaAdapter {
     }
 
     fn download(
-        &self,
         subdir: &str,
         filename: &str,
         context: &RegistryContext<'_>,
@@ -169,7 +166,10 @@ fn conda_filename(
         .clone()
         .unwrap_or_else(|| format!("{}-{}-0.conda", artifact.name, artifact.version));
     if !valid_filename(&filename)
-        || !(filename.ends_with(".conda") || filename.ends_with(".tar.bz2"))
+        || !matches!(
+            RegistryArchive::from_filename(&filename),
+            Some(RegistryArchive::Conda | RegistryArchive::CondaLegacy)
+        )
     {
         return Err(format!("invalid Conda archive filename {filename:?}"));
     }
