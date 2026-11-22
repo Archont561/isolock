@@ -151,10 +151,44 @@ fn then_manifest_records_sizes_and_digests(world: &ShardingWorld) {
         assert_eq!(actual_digest, part.sha256);
     }
     verify_shards(&shard_directory, manifest).expect("all shard and original digests verify");
+    let mut wrong_original = manifest.clone();
+    wrong_original.original_sha256 = Sha256Digest::from_bytes(b"wrong original");
+    assert!(matches!(
+        verify_shards(&shard_directory, &wrong_original),
+        Err(isolock_cas::CasError::DigestMismatch { artifact, .. })
+            if artifact == manifest.original_filename
+    ));
 
     let manifest_path = shard_directory.join(manifest.manifest_filename());
     let serialized_manifest = read_shard_manifest(&manifest_path).expect("read written manifest");
     assert_eq!(&serialized_manifest, manifest);
+}
+
+#[then("a failed ingest preserves pre-existing parts and removes only its own files")]
+fn failed_ingest_preserves_existing_parts(world: &ShardingWorld) {
+    let workspace = world.workspace.borrow();
+    let root = workspace.as_ref().unwrap().path();
+    let manifest = world.manifest.borrow();
+    let manifest = manifest.as_ref().unwrap();
+    let shards = root.join("shards");
+    let first = shards.join(&manifest.chunks[0].part_filename);
+    let saved = root.join("saved-first-part");
+    fs::rename(&first, &saved).unwrap();
+    let last = shards.join(&manifest.chunks[1].part_filename);
+    let existing = fs::read(&last).unwrap();
+    let result = shard_file(root.join("sample.bin"), &shards);
+    assert!(matches!(result, Err(isolock_cas::CasError::Io(error))
+        if error.kind() == io::ErrorKind::AlreadyExists));
+    assert!(
+        !first.exists(),
+        "the part created by the failed ingest must be rolled back"
+    );
+    assert_eq!(fs::read(last).unwrap(), existing);
+    assert_eq!(
+        read_shard_manifest(shards.join(manifest.manifest_filename())).unwrap(),
+        *manifest
+    );
+    fs::rename(saved, first).unwrap();
 }
 
 #[when("the shards are reassembled using POSIX cat")]

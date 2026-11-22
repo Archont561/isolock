@@ -21,7 +21,7 @@ LLVM_PROFDATA = "$CONDA_PREFIX/bin/llvm-profdata"
 build = "cargo build --workspace"
 test = "cargo test --workspace --all-features"
 nextest = "cargo nextest run --workspace"
-coverage = "cargo llvm-cov --workspace --all-features --lcov --output-path coverage/lcov.info"
+coverage = "sh scripts/coverage.sh"
 coverage-summary = "cargo llvm-cov --workspace --all-features --text"
 
 [feature.python.dependencies]

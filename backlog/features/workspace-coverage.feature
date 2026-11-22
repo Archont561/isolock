@@ -7,3 +7,4 @@ Feature: Complete Rust workspace coverage reporting
     And every configured coverage scope directory exists
     And CI generates and uploads the same full-workspace LCOV report
     And previous reports cannot replace missing current coverage
+    And coverage below the unchanged ninety percent target fails CI

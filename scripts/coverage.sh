@@ -9,4 +9,4 @@ LLVM_PROFDATA=$sysroot/lib/rustlib/$host/bin/llvm-profdata
 export LLVM_COV LLVM_PROFDATA
 [ -x "$LLVM_COV" ] && [ -x "$LLVM_PROFDATA" ] || { echo 'restored Rust compiler has no matching LLVM coverage tools' >&2; exit 1; }
 mkdir -p coverage
-exec cargo llvm-cov --workspace --all-features --offline --lcov --output-path coverage/lcov.info "$@"
+exec cargo llvm-cov --workspace --all-features --offline --lcov --output-path coverage/lcov.info --fail-under-lines 90 "$@"

@@ -17,11 +17,17 @@ use std::env;
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
+/// Typed plan input, explicit to avoid the macro's optional caller-side `serde` cfg.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AirlockPlanInput {
+    pub ci: bool,
+}
+
 /// CLI command definitions using `clifacet`.
 ///
 /// # Errors
 /// Returns configuration, plan/CAS validation, or CI lockfile-drift failures.
-#[clifacet::command]
+#[clifacet::command(input = AirlockPlanInput)]
 #[command(
     name = "isolock",
     version = VERSION,
@@ -148,5 +154,21 @@ fn main() -> ExitCode {
             println!("Legacy proxy commands: exec, serve, ingest");
             ExitCode::SUCCESS
         }
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::{AirlockPlanInput, RunAirlockPlan};
+    use clap::Parser;
+    use clifacet::Facet;
+
+    #[test]
+    fn clifacet_bridge_preserves_the_ci_flag_and_workstation_default() {
+        for (arguments, ci) in [(vec!["isolock"], false), (vec!["isolock", "--ci"], true)] {
+            let command = RunAirlockPlan::try_parse_from(arguments).unwrap();
+            assert_eq!(command.validate().unwrap(), AirlockPlanInput { ci });
+        }
+        assert!(RunAirlockPlan::try_parse_from(["isolock", "--unknown"]).is_err());
     }
 }
