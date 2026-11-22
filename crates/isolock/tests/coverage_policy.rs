@@ -1,6 +1,8 @@
 //! Keep Codecov's publishing scope aligned with the instrumented Cargo workspace.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Invalid policy fixtures must fail the test.
 
+mod coverage_support;
+
 use rstest::fixture;
 use rstest_bdd_macros::{given, scenario, then, when};
 use serde_yaml::Value;
@@ -133,6 +135,44 @@ fn fresh_report(world: &CoverageWorld) {
         world.codecov["flags"]["rust"]["carryforward"].as_bool(),
         Some(false)
     );
+}
+
+#[then("coverage below the unchanged ninety percent target fails CI")]
+fn coverage_gate(world: &CoverageWorld) {
+    let command = SCRIPT
+        .lines()
+        .find(|line| line.starts_with("exec cargo llvm-cov "))
+        .unwrap();
+    let arguments = command.split_whitespace().collect::<Vec<_>>();
+    assert!(arguments
+        .windows(2)
+        .any(|pair| pair == ["--fail-under-lines", "90"]));
+    assert_eq!(
+        world.codecov["coverage"]["status"]["project"]["rust"]["target"].as_str(),
+        Some("90%")
+    );
+    assert_eq!(
+        world.codecov["coverage"]["status"]["patch"]["default"]["target"].as_str(),
+        Some("90%")
+    );
+}
+
+#[test]
+fn isolated_cli_fixtures_inherit_only_the_profile_destination() {
+    let mut command = std::process::Command::new("fixture");
+    command.env("ISOLOCK_MODE", "connected").env_clear();
+    coverage_support::preserve_profile(&mut command);
+    let explicit = command.get_envs().collect::<Vec<_>>();
+    match std::env::var_os("LLVM_PROFILE_FILE") {
+        Some(profile) => assert_eq!(
+            explicit,
+            [(
+                std::ffi::OsStr::new("LLVM_PROFILE_FILE"),
+                Some(profile.as_os_str())
+            )]
+        ),
+        None => assert!(explicit.is_empty()),
+    }
 }
 
 #[scenario(path = "../../backlog/features/workspace-coverage.feature", index = 0)]

@@ -68,11 +68,31 @@ not be replaced by an older report. Test source files remain excluded from Codec
 statistics, not from test execution. Opt-in real-profile integrations still run separately
 and their execution is not included in this coverage report.
 
-The existing 90% project and patch targets are unchanged. Expanding the old CLI-only flag
-changes the reporting denominator; compare future reports using the corrected workspace
-scope rather than interpreting that scope change as a runtime regression.
+The shared script and `pixi run coverage` enforce `--fail-under-lines 90`: coverage below
+90% fails the job before upload. The existing Codecov project and patch targets remain 90%.
+Expanding the old CLI-only flag changes the reporting denominator; compare reports using
+the corrected workspace scope rather than interpreting that scope change as a runtime
+regression.
+
+CLI fixtures that clear the child environment preserve only `LLVM_PROFILE_FILE` from the
+coverage instrumentation. Otherwise the instrumented child's profile is written into its
+temporary project and deleted before aggregation, hiding executed CLI paths. Application
+configuration remains isolated; no additional source exclusions are used.
 
 ## Cargo metadata and supply-chain policy
+
+The CLI uses crates.io `clifacet` 0.10 with default features disabled; optional interactive,
+async, MCP, and TUI integrations are not enabled. The lockfile pins both `clifacet` and
+`clifacet-macros` to 0.10.0 with their registry checksums. The command declares an explicit
+typed input rather than depending on the macro's generated caller-side `serde` feature
+check; strict warnings stay enabled. Black-box scenarios preserve the clean-plan success,
+CI drift failure, and workstation drift report across this upgrade.
+
+The reviewed developer bundle is `developer-clifacet-0-10`. Run `bash scripts/restore.sh`
+to restore it, including the matching Cargo vendor source, before offline validation.
+This separate generation preserves the pre-upgrade sandbox for older checkouts. The
+publisher watches Cargo manifests and the lockfile as well as Pixi inputs; crate archives
+and generated vendor payloads stay on the sandbox transport branch, not the code branch.
 
 First-party packages inherit workspace keywords and the `development-tools::build-utils`
 category. Cargo's broad lint group remains an **audit-only** command:

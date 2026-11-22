@@ -1,6 +1,8 @@
 //! Proxy operations share the Figment precedence/provenance boundary with profiles.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 
+mod coverage_support;
+
 use std::fs;
 use std::process::{Command, Output};
 use tempfile::TempDir;
@@ -21,6 +23,7 @@ impl Project {
             .current_dir(self.temp.path())
             .args(args)
             .env("HOME", self.temp.path());
+        coverage_support::preserve_profile(&mut command);
         command
     }
     fn explain(&self, args: &[&str]) -> Command {

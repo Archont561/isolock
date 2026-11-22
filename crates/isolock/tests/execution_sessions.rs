@@ -2,6 +2,8 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Test fixtures fail fast on invalid setup.
 
+mod coverage_support;
+
 use rstest::fixture;
 use rstest_bdd_macros::{given, scenario, then, when};
 use std::cell::RefCell;
@@ -43,6 +45,7 @@ impl Project {
             .env("NO_PROXY", "inherited.invalid")
             .env("ISOLOCK_PROXY_PORT", self.address.port().to_string())
             .env("ISOLOCK_CARGO_HOME", self.temp.path().join("cargo home"));
+        coverage_support::preserve_profile(&mut command);
         command
     }
     fn assert_cleaned(&self) {
