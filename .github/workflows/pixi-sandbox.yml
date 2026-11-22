@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
     paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/**/Cargo.toml'
       - 'pixi.toml'
       - 'pixi.lock'
       - 'pixi-sandbox.toml'
@@ -67,7 +70,7 @@ jobs:
           "$PIXI_SANDBOX_BIN" pipeline
           --envs default
           --platform linux-64
-          --branch sandbox/developer-linux-64
+          --branch sandbox/developer-clifacet-0-10-linux-64
           --remote "$REMOTE"
           --config pixi-sandbox.toml
           --cargo-vendor true
