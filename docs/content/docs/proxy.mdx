@@ -16,9 +16,10 @@ isolock exec cargo build --locked
 isolock exec -- npm test
 ```
 
-`exec` does not require `--`. Everything after `exec` (except an optional leading `--`)
-is the child command, including flags such as `--version`. Configure its proxy through
-`isolock.toml` or environment overrides rather than inserting Isolock flags before the child.
+`exec` does not require `--`. Once the child executable begins, its entire argument tail
+is passed through, including flags such as `--version`, `--help`, and `--config`, separators,
+empty arguments, and spaces. Configure Isolock through `isolock.toml`, environment overrides,
+or global flags before the child command, for example `isolock --port 0 exec -- npm test`.
 A normal child exit code is preserved; on Unix a signal maps to `128 + signal`.
 
 ## Typed operational configuration

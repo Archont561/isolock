@@ -1,7 +1,7 @@
-//! Typed CLI boundary for profile planning, transport and materialization.
+//! Execute typed profile operations without inspecting or reparsing process arguments.
 
 use crate::{config, materialize, profile_store, transport};
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use isolock_cas::Sha256Digest;
 use isolock_plan::profile::{build_profiles, changed_input, PlanRequest, ProfileManifest};
 use profile_store::{StoreLease, Workspace};
@@ -9,115 +9,52 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-#[derive(Parser)]
-#[command(name = "isolock", version = isolock_core::VERSION, about = "Verified profile-scoped offline environments")]
-struct Cli {
-    #[command(flatten)]
-    overrides: config::Overrides,
-    #[command(subcommand)]
-    command: Operation,
-}
-
-#[derive(Subcommand)]
-enum Operation {
-    /// Validate and explain typed configuration without planning or fetching artifacts.
+/// Profile operations already parsed and validated by the application command tree.
+pub enum Operation {
     Config {
-        #[command(subcommand)]
         command: Configuration,
     },
-    /// Generate an immutable profile plan, or check it without changing it.
     Plan {
-        #[arg(long)]
         ci: bool,
-        #[arg(long)]
         locked: bool,
-        #[arg(long)]
         check: bool,
     },
-    /// Retrieve the manifest graph first, then only its missing blobs.
     Fetch {
-        #[arg(long)]
         manifest: Option<String>,
     },
-    /// Verify a locked plan and materialize only its selected profile.
-    #[command(alias = "bootstrap")]
     Sync {
-        #[arg(long)]
         locked: bool,
-        #[arg(long)]
         offline: bool,
-        #[arg(long)]
         manifest: Option<String>,
     },
-    /// Export selected immutable manifests and verified bytes to a directory snapshot.
     Export {
-        #[arg(long)]
         output: PathBuf,
     },
-    /// Write the reviewed POSIX seed manifest and bootstrap script.
     SeedManifest {},
-    /// Report unreachable canonical CAS blobs; deletion requires --apply.
     Gc {
-        #[arg(long)]
         apply: bool,
-        #[arg(long)]
         root: Vec<String>,
     },
 }
 
-#[derive(Subcommand)]
-enum Configuration {
+#[derive(Debug, Clone, Subcommand)]
+pub enum Configuration {
+    /// Validate the layered configuration.
+    #[command(display_name = "isolock")]
     Check,
+    /// Show the effective configuration.
+    #[command(display_name = "isolock")]
     Show,
+    /// Explain a configuration value and its source.
+    #[command(display_name = "isolock")]
     Explain { path: String },
 }
 
-pub fn handles(arguments: &[String]) -> bool {
-    if arguments
-        .first()
-        .is_some_and(|arg| matches!(arg.as_str(), "exec" | "serve" | "ingest"))
-    {
-        return false;
-    }
-    if arguments.first().is_some_and(|arg| arg == "plan")
-        && (arguments
-            .iter()
-            .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
-            || Path::new("isolock.toml").is_file())
-    {
-        return true;
-    }
-    arguments
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--profile" | "--config" | "--user-config"))
-        || arguments.first().is_some_and(|arg| {
-            matches!(
-                arg.as_str(),
-                "config" | "fetch" | "sync" | "bootstrap" | "export" | "seed-manifest" | "gc"
-            )
-        })
-        || arguments
-            .iter()
-            .any(|arg| arg.starts_with("--profile=") || arg.starts_with("--config="))
-}
-
-pub fn run(arguments: &[String]) -> Result<(), String> {
-    let cli = match Cli::try_parse_from(
-        std::iter::once("isolock".to_owned()).chain(arguments.iter().cloned()),
-    ) {
-        Ok(cli) => cli,
-        Err(error) if !error.use_stderr() => {
-            print!("{error}");
-            return Ok(());
-        }
-        Err(_) => {
-            return Err("invalid profile command or flags; use isolock COMMAND --help".into())
-        }
-    };
+pub fn run(overrides: &config::Overrides, operation: Operation) -> Result<(), String> {
     let root = std::env::current_dir().map_err(|_| "cannot resolve project directory")?;
-    let resolved = config::load(&root, &cli.overrides)?;
+    let resolved = config::load(&root, overrides)?;
     let settings = &resolved.settings;
-    if let Operation::Config { command } = &cli.command {
+    if let Operation::Config { command } = &operation {
         match command {
             Configuration::Check => println!(
                 "Configuration is valid (schema {}).",
@@ -132,7 +69,7 @@ pub fn run(arguments: &[String]) -> Result<(), String> {
         return Ok(());
     }
     let workspace = Workspace::new(&root, settings);
-    if let Operation::Gc { apply, root } = &cli.command {
+    if let Operation::Gc { apply, root } = &operation {
         let roots = if root.is_empty() {
             &settings.gc.roots
         } else {
@@ -145,20 +82,18 @@ pub fn run(arguments: &[String]) -> Result<(), String> {
         );
         return Ok(());
     }
-    let profile = cli
-        .overrides
+    let profile = overrides
         .profile
         .as_deref()
         .ok_or("explicit --profile is required")?;
-    let platform = cli
-        .overrides
+    let platform = overrides
         .platform
         .as_deref()
         .ok_or("explicit --platform is required")?;
     isolock_plan::profile::identifier(profile)?;
     isolock_plan::profile::identifier(platform)?;
     let _lease = StoreLease::acquire(&workspace)?;
-    execute(cli.command, &workspace, settings, profile, platform)
+    execute(operation, &workspace, settings, profile, platform)
 }
 
 fn execute(
