@@ -20,9 +20,8 @@ coverage:
 flags:
   rust:
     paths:
-      - crates/isolock/src/
-      - crates/isolock-version/src/
-    carryforward: true
+      - crates/
+    carryforward: false
 
 comment:
   layout: "reach,diff,flags,files"

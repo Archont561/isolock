@@ -51,6 +51,7 @@ jobs:
         with:
           files: coverage/lcov.info
           flags: rust
+          disable_search: true
           fail_ci_if_error: false
 
   profile-materialization:
