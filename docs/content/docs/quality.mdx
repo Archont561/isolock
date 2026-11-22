@@ -95,6 +95,20 @@ global overrides, child argument tails, streams and exit statuses, plus clean-pl
 success, CI drift failure, and workstation inspection. Existing profile and proxy suites
 exercise the same real binary.
 
+Reviewed-ingestion contracts execute the real binary against local originals, temporary
+Git repositories/remotes, and a cold consumer CAS. They check digest mismatches (including
+cache hits and duplicate digests), rejected batches, immutable publication records, dirty
+checkout preservation, idempotence, concurrent non-force rejection/retry, workflow argv
+safety, and conservative ingestion GC roots. The profile path publishes payloads first,
+locks to that commit, publishes its manifest, fetches exactly the selected CAS closure,
+then removes the originals/remote before offline materialization and execution.
+
+That end-to-end publication scenario uses fixture tools/archives. The separate native
+Pixi/Rust integrations remain explicit tests, not evidence of native publication on every
+platform. Connected acquisition tests replace the external downloader boundary with a
+controlled executable; they do not contact registries. All normal tests remain offline,
+and the unchanged coverage gate still includes every workspace crate.
+
 The reviewed developer bundle is `developer-clifacet-0-10`. Run `bash scripts/restore.sh`
 to restore it, including the matching Cargo vendor source, before offline validation.
 This separate generation preserves the pre-upgrade sandbox for older checkouts. The

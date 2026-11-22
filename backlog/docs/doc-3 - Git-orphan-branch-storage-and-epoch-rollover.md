@@ -3,36 +3,56 @@ id: doc-3
 title: Git orphan branch storage and epoch rollover
 type: architecture
 created_date: '2026-11-17 11:00'
-updated_date: '2026-11-17 11:00'
+updated_date: '2026-11-18 12:00'
 ---
 
-## Git Orphan Branch Storage and Epoch Rollover
+## Git orphan storage: Implemented scope
 
-### Problem Statement
+The reviewed ingestion/publication path is implemented by the `isolock` CLI, not by the
+CAS library. See [the user guide](../../docs/content/docs/ingestion.mdx) and
+[executable contracts](../features/reviewed-ingestion.feature).
 
-Storing multi-gigabyte binary dependency artifacts directly on `main` or development branches bloats working tree checkouts, causes merge conflicts on binaries, and pollutes developer commit logs.
+1. **Dedicated storage generation:** `push` targets only a positive `isolock/vN` branch.
+   Its first commit has no code parent; later commits parent the current remote storage
+   tip. The default is `storage.reference = "isolock/v1"`, not a `branch` configuration key.
+2. **No storage checkout:** a private Git index stages only recognized regular snapshot
+   paths. Producer HEAD, branch, real index, staged/unstaged changes, and untracked files
+   remain unchanged. Git object/fetch metadata is operational state, not a code commit.
+3. **Reviewed raw snapshot:** a format marker, `cas/sha256`, immutable ingestion records
+   and batches, and a metadata-preserving legacy `plan.json` are published. Explicit
+   profile publication adds existing export-compatible manifest objects and aliases.
+   Existing unmarked or legacy-sharded trees are not migrated/adopted.
+4. **Linear audit:** subjects use `chore(deps): add REGISTRY/NAME==VERSION`; profile
+   publication uses `chore(deps): add profile/PROFILE-PLATFORM`. Identical trees are no-ops.
+   Pushes are never forced. A concurrent update rejects publication; retry reloads its tip.
+5. **Pinned profiles:** publish all payloads and reviewed input-file originals first,
+   lock the profile to that commit, then publish its manifest. Publication verifies that
+   the locked commit contains the exact exported originals and matches the destination.
 
-### Architectural Solution
+Keeping storage off the code branch prevents binary working-tree pollution. It does **not**
+mean a normal all-branch Git clone avoids downloading storage objects. Use deliberate
+single-branch/shallow fetches as appropriate; the current Git profile fallback explicitly
+reports broader snapshot transfer rather than claiming blob-selective transport.
 
-1. **Dedicated Orphan Branch (`isolock/v1`)**:
-   - The orphan branch shares no commit ancestry with code branches (`main`, `develop`).
-   - Normal `git clone` or `git checkout main` does not download or check out dependency blobs unless requested.
+## Publication limits
 
-2. **Git Plumbing Without Checkout**:
-   - Isolock invokes system `git` CLI plumbing via `std::process::Command` without working tree pollution.
-   - Packages are staged into Git object database using `git hash-object -w` and `git mktree`.
-   - Commits are appended using `git commit-tree` with the current remote branch tip as parent.
-   - Ref pointer updated via `git update-ref refs/heads/isolock/v1 <commit_sha>`.
-   - This leaves developer working trees, index, and `main` untouched.
+The publisher rejects individual originals over 95 MiB and live snapshot trees over
+1,500 MiB. Reviewed ingestion JSON, its encoded audit objects, and legacy plan JSON have
+4 MiB bounds. The live-tree budget does not cap cumulative historical objects. No binary
+archives are added to `main` by this implementation or its disposable-remote tests.
 
-3. **Conventional Commit Audit Trail**:
-   Each ingestion generates a message in the format:
+CAS large-blob sharding exists independently, but it is **not** integrated with reviewed
+Git publication. Directory transport and the existing FileStore API support other raw
+snapshot provisioning workflows; there is no automatic conversion of sharded layouts.
 
-   ```text
-   chore(deps): add <registry>/<package>==<version>
-   ```
+## Deferred epoch rollover
 
-4. **Epoch Rollover Budget**:
-   - To keep shallow clone latency bounded, the branch is monitored for cumulative size.
-   - When branch size approaches `1,500 MiB`, a new orphan branch `isolock/v2` is initialized.
-   - `isolock.toml` records the active branch generation (`branch = "isolock/v2"`).
+**Automatic rollover is not implemented.** The publisher fails at its budget; it does not
+create `isolock/v2`, prune history, or rewrite `isolock.toml`. A reviewed, explicitly chosen
+new generation is accepted, but migration/retention across generations is not automated.
+
+[ISO-24](../tasks/iso-24%20-%20Automatic-storage-epoch-rollover-and-migration.md) tracks the
+remaining design and implementation. The tagged [rollover feature](../features/git-orphan-branch.feature)
+is a deferred specification, not an executed implementation test. It needs a bounded
+history policy, reachable-profile migration, atomic/ref-race handling, and cold-consumer
+validation before it can be claimed as supported.

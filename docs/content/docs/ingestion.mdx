@@ -1,0 +1,213 @@
+---
+title: Reviewed ingestion and publication
+description: Verify pinned originals, publish linear storage commits, and restore a cold offline consumer.
+---
+
+## The supported path
+
+Isolock implements **reviewed artifact → verified CAS → explicit Git publication → offline
+consumer**. It does not resolve versions, discover transitive dependencies, or turn an
+unreviewed download into a trusted pin. Planning and materialization do not acquire upstream
+artifacts. Storage transfer is a separate, explicit operation.
+
+Keep reviewed JSON/TOML and lockfiles with code. Keep original archives and CAS payloads
+out of code branches. Nothing in this guide requires checking out a storage branch in the
+producer's working tree.
+
+## Review exact artifacts
+
+Create `isolock.ingest.json` with schema version 1. This example has a placeholder digest
+and provenance URL: replace both with independently reviewed values before using it.
+
+```json
+{
+  "schema-version": 1,
+  "artifacts": [
+    {
+      "registry": "cargo",
+      "name": "demo",
+      "version": "1.0.0",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "filename": "demo-1.0.0.crate",
+      "source": "https://github.com/example/reviewed/demo-1.0.0.crate"
+    }
+  ]
+}
+```
+
+Each record requires all six artifact fields. Registry names are lowercase: `cargo`,
+`pypi`, `npm`, `conda`, or `generic`. Use `generic` for reviewed runtime/seed archives and
+profile input files that do not belong in the legacy registry plan. Scoped npm names such
+as `@types/node` are supported. Names and exact versions must fit the CLI's restricted
+identifier syntax; ranges and version solving are not supported.
+
+Optional `metadata` retains the existing registry-plan fields: `filename`, `subdir`,
+`registry_metadata`, and `requires_python`. A metadata filename must equal the record's
+filename. Registry metadata remains the reviewer's responsibility; ingestion verifies bytes,
+not the archive's package identity or dependency closure. The legacy `AirlockPlan` projection
+supports one archive per registry/name/version, not multiple wheel or Conda build variants.
+
+The schema rejects unknown fields, duplicate identities/filenames, unsafe basenames, and
+credential-bearing sources. Sources must be HTTPS URLs without userinfo, query parameters,
+or fragments. Do not put tokens or signed URLs in manifests. Both the input and its encoded
+audit object must fit 4 MiB; an original must be a regular, non-symlink file no larger than
+95 MiB.
+
+## Verify local originals
+
+Place each original under its reviewed basename, then run:
+
+```sh
+isolock ingest --manifest isolock.ingest.json --artifacts originals
+```
+
+The defaults are `--manifest isolock.ingest.json` and `--artifacts .`. To select only exact
+reviewed records from a larger manifest, pass an ecosystem and package pins:
+
+```sh
+isolock ingest --manifest isolock.ingest.json --artifacts originals \
+  --registry cargo demo==1.0.0
+```
+
+Ingestion checks **every supplied original**, including cache hits and records sharing a
+digest. It stages and validates the selected batch before importing any of its bytes into
+the configured CAS. An existing corrupt destination blob is an error, not something to
+replace. This is validation-before-import, not a filesystem transaction across
+unrecoverable I/O failures.
+
+Verified originals go to `storage.cas-dir` (default `.isolock/cas`) under
+`sha256/aa/bb/FULL_DIGEST`. An immutable batch object goes to
+`.isolock/ingestion/objects/DIGEST.json`. Local ingestion neither downloads nor publishes.
+
+### Explicit connected acquisition
+
+A connected operator or the dispatch workflow can acquire the manifest's exact HTTPS
+sources instead of supplying local files:
+
+```sh
+isolock ingest --manifest isolock.ingest.json --download --registry cargo demo==1.0.0
+```
+
+`--download` requires `curl` and conflicts with an explicit `--artifacts`. Curl configuration
+and URL globbing are not used; transfers and redirects are HTTPS-only, with a 300-second
+per-artifact timeout and a 95 MiB limit. Downloaded bytes still pass the same local batch and
+SHA-256 checks. A missing downloader, download failure, or digest mismatch fails ingestion.
+It never substitutes a newer version, fetches package metadata, or publishes automatically.
+
+## Publish explicitly
+
+Configure the destination generation with `storage.reference` in `isolock.toml` or
+`--storage-ref`. The default is `isolock/v1`.
+
+```sh
+isolock push --manifest isolock.ingest.json
+# Or select a reviewed subset and an explicit destination:
+isolock push --manifest isolock.ingest.json --registry cargo demo==1.0.0 --remote origin
+```
+
+`push` reads the reviewed manifest and verifies its selected bytes in CAS. It does not
+read the originals directory or download missing bytes. A remote can be a configured Git
+remote name, a local repository directory, or a credential-free HTTPS URL. SSH/helper
+transports and code-branch/tag destinations are not supported by this publisher. Configure
+Git authentication externally; do not embed credentials in a URL.
+
+The first commit creates an orphan storage history. Later commits parent the current
+remote storage tip, with audit subjects such as `chore(deps): add cargo/demo==1.0.0`.
+A private Git index preserves the producer's branch, HEAD, staged/unstaged changes, and
+untracked files. The publisher does not update a local code or storage branch.
+
+The snapshot is compatible with the existing raw-CAS, legacy-plan, and profile consumers:
+
+```text
+isolock-storage.json                 # reviewed-artifact format marker
+plan.json                            # metadata-preserving legacy AirlockPlan
+cas/sha256/aa/bb/FULL_DIGEST           # original bytes
+ingestion/records/IDENTITY.json       # immutable artifact/provenance record
+ingestion/objects/BATCH_DIGEST.json   # immutable reviewed batch
+plans/objects/MANIFEST_DIGEST.json    # added by explicit profile publication
+plans/PROFILE-PLATFORM.lock           # reviewed profile alias
+```
+
+Re-publishing the same tree is a no-op. A published identity cannot change its bytes,
+source, or metadata. A concurrent remote update rejects the **non-force** push; retrying
+reloads and parents the new tip. Publication never force-pushes or rewrites history.
+
+Existing destinations must have the reviewed-artifact marker and recognized regular-file
+snapshot paths. Unmarked exports, legacy sharded trees, arbitrary code trees, executable
+files, and symlinks are not adopted. Existing consumers/layouts remain usable;
+automatic storage migration is not implemented.
+
+### Publish a locked profile in two phases
+
+Profile manifests must pin a commit that **already contains every reachable original**,
+including each byte-pinned input file in `manifest.inputs`. Include those inputs in the
+review manifest as `generic` records with reviewed provenance. Planning may capture local
+input bytes into CAS, but it cannot retroactively put them into an earlier storage commit.
+
+With `storage.transport = "git"` and a matching local/public `storage.source`:
+
+```sh
+isolock ingest --manifest isolock.ingest.json --artifacts originals
+isolock push --manifest isolock.ingest.json
+isolock plan --profile rust-standalone --platform linux-64
+isolock push --profile rust-standalone --platform linux-64
+```
+
+The second publication reuses the existing verified profile export. It requires matching
+storage identity, unchanged locked inputs/configuration, and identical payload blobs in the
+pinned commit. It publishes immutable manifest objects and replaceable profile aliases;
+it does not replan or repair locked history. `export --output DIRECTORY` remains
+a separate local operation and does not publish.
+
+A cold consumer with the matching reviewed project/configuration can then use:
+
+```sh
+isolock fetch --profile rust-standalone --platform linux-64 --manifest REVIEWED_MANIFEST_DIGEST
+isolock sync --profile rust-standalone --platform linux-64 --locked --offline
+. .isolock/activate/rust-standalone-linux-64
+cargo build --locked --offline
+```
+
+Git discovers manifests at the named ref and obtains payloads from the locked commit. Its
+fallback transfers a **broader snapshot**; only the selected closure enters the consumer
+CAS. It is not blob-selective Git transfer. Once originals are in that CAS, offline sync
+and execution do not require the original files or storage remote. See [profiles](./profiles.mdx)
+for provider-specific boundaries and bootstrap instructions.
+
+## Connected workflow and PR guard
+
+Commit the reviewed manifest at the code ref you intend to run, then dispatch explicitly:
+
+```sh
+gh workflow run isolock.yml --ref REVIEWED_CODE_REF \
+  -f manifest=isolock.ingest.json -f registry=cargo -f packages='demo==1.0.0'
+```
+
+The workflow restores reviewed developer tooling, builds the CLI offline, checks that the
+manifest is tracked, acquires only the selected reviewed sources, then invokes `push`.
+Package input is split into literal argument entries with an option separator, never
+interpolated as shell code. Generated drift guidance includes the manifest input and the
+requirement to review/commit its source, filename, and SHA-256 pins first.
+
+The PR job is a **published snapshot check**, not a general project-lockfile resolver. It
+verifies the published `plan.json` against that snapshot's CAS in an isolated directory,
+not against a producer's warm cache. It skips with a notice when no `isolock/v1` ref exists.
+Profile-specific input/closure checks remain the responsibility of the explicit profile
+CI path. Pull requests never run the connected publication job.
+
+## Retention and current limits
+
+Ingestion objects are conservative GC roots, even before publication and even when a
+profile-specific `gc --root` is supplied. Their blobs join the durable shared-CAS workspace
+registration. A damaged, misnamed, or unsafe ingestion object stops GC. Automatic retirement of reviews or stale workspace registrations is not implemented.
+
+Git publication rejects originals over 95 MiB and live snapshot trees over 1,500 MiB.
+The latter is a **live-tree** budget, not a bound on all historical Git objects. The CAS
+sharding library does not imply sharded Git publication is available. Automatic epoch
+rollover, snapshot migration, direct registry resolution, selective Git/HTTP transport,
+and connected proxy-miss fetching remain follow-up work.
+
+The executable contracts use the real CLI, disposable Git remotes, and empty consumer
+CAS directories. Profile publication tests use fixture runtimes/archives; separate opt-in
+native Pixi and Rust tests validate their materializers. Neither is a claim of native
+end-to-end publication for every platform, package manager, or dependency graph.

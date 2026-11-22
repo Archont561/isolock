@@ -14,7 +14,7 @@ ordinal: 9000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Format `gh workflow run isolock.yml -f registry=<reg> -f packages="<pkgs>"` dispatch command when plan drift is detected.
+Format `gh workflow run isolock.yml -f manifest=isolock.ingest.json -f registry=<reg> -f packages="<pkgs>"` when expected legacy plan artifacts are missing. Require reviewed/committed source, filename, and SHA-256 pins before dispatch; do not imply registry solving.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -29,3 +29,5 @@ Format `gh workflow run isolock.yml -f registry=<reg> -f packages="<pkgs>"` disp
 
 - Governed by `backlog/features/plan-drift.feature` and architecture document `backlog/docs/doc-5 - Lockfile-plan-drift-and-ci-airlock-guard.md`.
 - 2026-11-17: CLI drift checks now load the airlock plan and CAS, fail closed when no plan is available, and emit safe, deterministic registry-grouped commands; the BDD contract and workflow input contract tests pass.
+
+- ISO-23 supplies the formerly missing real ingestion/publication path and explicit reviewed-manifest workflow input. The PR guard now verifies the published snapshot itself; profile CI separately checks selected input/closure drift.

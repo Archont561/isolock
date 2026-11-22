@@ -107,7 +107,8 @@ fn drift(plan_cli: &PlanCli, ci: bool) {
         "Verdict: DRIFT DETECTED",
         if ci { "mode: ci" } else { "mode: workstation" },
         "demo==1.0.0 (cargo)",
-        "gh workflow run isolock.yml -f registry=cargo -f packages=\"demo==1.0.0\"",
+        "Review and commit isolock.ingest.json",
+        "gh workflow run isolock.yml -f manifest=isolock.ingest.json -f registry=cargo -f packages=\"demo==1.0.0\"",
     ] {
         assert!(report.contains(expected), "{report}");
     }

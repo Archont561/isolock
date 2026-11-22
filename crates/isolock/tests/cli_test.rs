@@ -47,6 +47,7 @@ fn test_cli_version_flag() {
         &["seed-manifest", "--version"],
         &["gc", "--version"],
         &["ingest", "--version"],
+        &["push", "--version"],
         &["config", "--version"],
         &["config", "check", "--version"],
         &["config", "show", "--version"],
@@ -161,7 +162,10 @@ fn test_cli_subcommands() {
         .arg("ingest")
         .output()
         .expect("runs isolock ingest");
-    assert!(ingest_out.status.success());
+    assert_eq!(ingest_out.status.code(), Some(1));
+    assert!(ingest_out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&ingest_out.stderr)
+        .contains("cannot read reviewed ingestion manifest"));
 }
 
 #[test]
@@ -202,7 +206,7 @@ fn pull_request_workflow_skips_drift_audit_without_storage_ref() {
 
 fn assert_dispatch_command_matches_inputs<'a>(command: &'a str, options: &[&str]) -> &'a str {
     let fields = command
-        .strip_prefix("gh workflow run isolock.yml -f registry=")
+        .strip_prefix("gh workflow run isolock.yml -f manifest=isolock.ingest.json -f registry=")
         .expect("command begins with the workflow and registry field");
     let (registry, packages_field) = fields
         .split_once(" -f packages=\"")
@@ -220,6 +224,31 @@ fn assert_dispatch_command_matches_inputs<'a>(command: &'a str, options: &[&str]
         .split_once("==")
         .is_some_and(|(name, version)| { !name.is_empty() && !version.is_empty() })));
     registry
+}
+
+fn assert_reviewed_workflow_inputs(workflow: &serde_yaml::Value) -> Vec<&str> {
+    let inputs = &workflow["on"]["workflow_dispatch"]["inputs"];
+    assert_eq!(inputs["manifest"]["type"].as_str(), Some("string"));
+    assert_eq!(inputs["manifest"]["required"].as_bool(), Some(true));
+    assert_eq!(
+        inputs["manifest"]["default"].as_str(),
+        Some("isolock.ingest.json")
+    );
+    let registry_input = &inputs["registry"];
+    assert_eq!(registry_input["type"].as_str(), Some("choice"));
+    assert_eq!(registry_input["required"].as_bool(), Some(true));
+    let options = registry_input["options"]
+        .as_sequence()
+        .expect("registry is a choice input")
+        .iter()
+        .filter_map(serde_yaml::Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(options, ["cargo", "conda", "pypi", "npm"]);
+
+    let packages_input = &inputs["packages"];
+    assert_eq!(packages_input["type"].as_str(), Some("string"));
+    assert_eq!(packages_input["required"].as_bool(), Some(true));
+    options
 }
 
 #[test]
@@ -268,21 +297,8 @@ fn generated_dispatch_arguments_match_workflow_dispatch_inputs() {
     let workflow: serde_yaml::Value =
         serde_yaml::from_str(include_str!("../../../.github/workflows/isolock.yml"))
             .expect("workflow yaml parses");
-    let inputs = &workflow["on"]["workflow_dispatch"]["inputs"];
-    let registry_input = &inputs["registry"];
-    assert_eq!(registry_input["type"].as_str(), Some("choice"));
-    assert_eq!(registry_input["required"].as_bool(), Some(true));
-    let options = registry_input["options"]
-        .as_sequence()
-        .expect("registry is a choice input")
-        .iter()
-        .filter_map(serde_yaml::Value::as_str)
-        .collect::<Vec<_>>();
-    assert_eq!(options, ["cargo", "conda", "pypi", "npm"]);
-
-    let packages_input = &inputs["packages"];
-    assert_eq!(packages_input["type"].as_str(), Some("string"));
-    assert_eq!(packages_input["required"].as_bool(), Some(true));
+    let options = assert_reviewed_workflow_inputs(&workflow);
+    assert!(report.contains("Review and commit isolock.ingest.json"));
 
     let commands = report
         .lines()

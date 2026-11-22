@@ -1,4 +1,12 @@
 {
   "title": "Isolock Documentation",
-  "pages": ["index", "getting-started", "profiles", "proxy", "quality", "architecture"]
+  "pages": [
+    "index",
+    "getting-started",
+    "ingestion",
+    "profiles",
+    "proxy",
+    "quality",
+    "architecture"
+  ]
 }

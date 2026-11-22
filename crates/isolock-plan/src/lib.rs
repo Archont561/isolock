@@ -163,9 +163,10 @@ pub fn missing_artifacts(expected: &AirlockPlan, current: &AirlockPlan) -> Vec<P
 
 /// Formats registry-grouped GitHub Actions dispatch commands for missing artifacts.
 ///
-/// Generated package specifications are restricted to shell-safe characters because the
-/// workflow passes the `packages` input to its ingestion command. Registry names are checked
-/// against the choice values declared by `.github/workflows/isolock.yml`.
+/// Commands explicitly select the reviewed `isolock.ingest.json` manifest; they do not
+/// resolve registries or synthesize trusted sources/digests. Package specifications use
+/// shell-safe characters for copy/paste; the workflow also passes them as literal argv.
+/// Registry names match the choices declared by `.github/workflows/isolock.yml`.
 ///
 /// # Errors
 /// Returns an error for an unsupported registry or package/version that cannot safely
@@ -203,7 +204,7 @@ pub fn format_dispatch_commands(missing: &[PlannedArtifact]) -> Result<Vec<Strin
             }
             let packages = packages.into_iter().collect::<Vec<_>>().join(" ");
             commands.push(format!(
-                "gh workflow run isolock.yml -f registry={registry} -f packages=\"{packages}\""
+                "gh workflow run isolock.yml -f manifest=isolock.ingest.json -f registry={registry} -f packages=\"{packages}\""
             ));
         }
     }
@@ -347,8 +348,8 @@ mod tests {
         assert_eq!(
             format_dispatch_commands(&missing).expect("package inputs are safe"),
             vec![
-                "gh workflow run isolock.yml -f registry=cargo -f packages=\"serde==1.0.210\"",
-                "gh workflow run isolock.yml -f registry=pypi -f packages=\"fastapi==0.115.0 pydantic==2.9.2\"",
+                "gh workflow run isolock.yml -f manifest=isolock.ingest.json -f registry=cargo -f packages=\"serde==1.0.210\"",
+                "gh workflow run isolock.yml -f manifest=isolock.ingest.json -f registry=pypi -f packages=\"fastapi==0.115.0 pydantic==2.9.2\"",
             ]
         );
     }
@@ -366,7 +367,7 @@ mod tests {
         let missing = vec![test_artifact("@types/node", "22.5.5", Registry::Npm)];
         assert_eq!(
             format_dispatch_commands(&missing).expect("scoped package input is safe"),
-            vec!["gh workflow run isolock.yml -f registry=npm -f packages=\"@types/node==22.5.5\""]
+            vec!["gh workflow run isolock.yml -f manifest=isolock.ingest.json -f registry=npm -f packages=\"@types/node==22.5.5\""]
         );
     }
 

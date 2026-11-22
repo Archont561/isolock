@@ -12,11 +12,3 @@ pub struct Exec {
     )]
     pub(super) arguments: Vec<String>,
 }
-
-#[clifacet::group]
-#[command(display_name = "isolock")]
-pub struct Ingest {
-    #[clifacet(long, value_parser = ["cargo", "pypi", "npm", "conda"])]
-    pub(super) registry: Option<String>,
-    pub(super) packages: Vec<String>,
-}

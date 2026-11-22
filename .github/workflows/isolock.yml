@@ -11,6 +11,7 @@ on:
       - "package.json"
       - "requirements*.txt"
       - "isolock.toml"
+      - "isolock.ingest.json"
   workflow_dispatch:
     inputs:
       registry:
@@ -24,8 +25,13 @@ on:
           - pypi
           - npm
       packages:
-        description: "Space-separated package specifications (e.g. clifacet==0.3.0 serde==1.0.210)"
+        description: "Exact NAME==VERSION selections pinned in the reviewed manifest; no registry solving"
         required: true
+        type: string
+      manifest:
+        description: "Tracked, reviewed artifact manifest at this code ref"
+        required: true
+        default: "isolock.ingest.json"
         type: string
 
 concurrency:
@@ -37,7 +43,7 @@ permissions:
 
 jobs:
   plan-guard:
-    name: Airlock PR Drift Guard
+    name: Published Airlock Snapshot Guard
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -45,10 +51,8 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: stable
+      - name: Restore reviewed developer tooling from CAS
+        run: bash scripts/restore.sh
 
       - name: Check for Isolock Storage Ref
         id: airlock-storage
@@ -58,20 +62,33 @@ jobs:
           if [ -n "$branch_ref" ]; then
             git fetch origin refs/heads/isolock/v1:refs/remotes/origin/isolock/v1 --depth=1
             echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "reference=refs/remotes/origin/isolock/v1" >> "$GITHUB_OUTPUT"
           elif [ -n "$tag_ref" ]; then
             git fetch origin refs/tags/isolock/v1:refs/tags/isolock/v1 --depth=1
             echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "reference=refs/tags/isolock/v1" >> "$GITHUB_OUTPUT"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No isolock/v1 storage ref exists; skipping the Airlock drift audit until storage is initialized."
+            echo "::notice::No isolock/v1 storage ref exists; skipping published snapshot verification until storage is initialized."
           fi
+
+      - name: Build the snapshot auditor without registry access
+        if: steps.airlock-storage.outputs.available == 'true'
+        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo build --locked --offline --package isolock
 
       - name: Run Isolock Hermeticity Audit
         if: steps.airlock-storage.outputs.available == 'true'
+        env:
+          ISOLOCK_BIN: ${{ github.workspace }}/target/debug/isolock
+          ISOLOCK_SNAPSHOT_REF: ${{ steps.airlock-storage.outputs.reference }}
         run: |
-          echo "Auditing lockfile dependencies against airlock CAS..."
-          # isolock plan outputs 'gh workflow run isolock.yml' when dependencies are missing
-          cargo run --release --package isolock -- plan --ci
+          set -euo pipefail
+          snapshot=$(mktemp -d "$RUNNER_TEMP/isolock-snapshot.XXXXXX")
+          trap 'rm -rf "$snapshot"' EXIT
+          git archive "$ISOLOCK_SNAPSHOT_REF" | tar -x -C "$snapshot"
+          cd "$snapshot"
+          echo "Verifying the published plan and CAS, not solving project lockfiles."
+          ISOLOCK_PLAN=plan.json "$ISOLOCK_BIN" plan --ci --cas-dir cas
 
   ingest-dispatch:
     name: Airlock Package Ingestion
@@ -86,20 +103,41 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: stable
+      - name: Restore reviewed developer tooling from CAS
+        run: bash scripts/restore.sh
 
       - name: Configure Git Author
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Ingest Packages into CAS
-        run: |
-          cargo run --release --package isolock -- ingest --registry "${{ inputs.registry }}" ${{ inputs.packages }}
+      - name: Build the CLI without registry access
+        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo build --locked --offline --package isolock
 
-      - name: Push Incremental Commit to Orphan Branch
+      - name: Ingest and publish the reviewed selection
+        shell: bash
+        env:
+          ISOLOCK_BIN: ${{ github.workspace }}/target/debug/isolock
+          ISOLOCK_INGEST_MANIFEST: ${{ inputs.manifest }}
+          ISOLOCK_REGISTRY: ${{ inputs.registry }}
+          ISOLOCK_PACKAGES: ${{ inputs.packages }}
         run: |
-          cargo run --release --package isolock -- push
+          python3 - <<'PYTHON'
+          import os
+          import subprocess
+
+          binary = os.environ["ISOLOCK_BIN"]
+          manifest = os.environ["ISOLOCK_INGEST_MANIFEST"]
+          packages = os.environ["ISOLOCK_PACKAGES"].split()
+          if not packages:
+              raise SystemExit("An explicit reviewed package selection is required")
+          subprocess.run(
+              ["git", "ls-files", "--error-unmatch", "--", manifest],
+              check=True,
+              stdout=subprocess.DEVNULL,
+          )
+          selection = ["--manifest", manifest, "--registry", os.environ["ISOLOCK_REGISTRY"]]
+          # Literal argv and a separator prevent package text from becoming options or code.
+          subprocess.run([binary, "ingest", *selection, "--download", "--", *packages], check=True)
+          subprocess.run([binary, "push", *selection, "--", *packages], check=True)
+          PYTHON
