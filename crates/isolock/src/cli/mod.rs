@@ -151,6 +151,7 @@ impl Isolock {
             &self.overrides,
             &options.manifest,
             &options.remote,
+            options.epoch_policy.as_deref(),
             crate::ingestion::Selection {
                 registry: options.registry.as_deref(),
                 packages: &options.packages,

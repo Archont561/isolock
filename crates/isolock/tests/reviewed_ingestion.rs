@@ -653,7 +653,7 @@ fn concurrent_publication(world: &World) {
     fs::write(
         &hook,
         format!(
-            "#!/bin/sh\nset -eu\ngit -C remote.git update-ref refs/heads/isolock/v1 {} {}\n",
+            "#!/bin/sh\nset -eu\n# This is a foreign repository, not the private publisher Git directory.\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ngit -C remote.git update-ref refs/heads/isolock/v1 {} {}\n",
             std::str::from_utf8(&next).unwrap().trim(),
             std::str::from_utf8(&previous).unwrap().trim()
         ),

@@ -1,53 +1,78 @@
-//! Git plumbing with a private index; the code checkout and its refs are never staged.
+//! Git plumbing in a disposable repository and private index, never the code checkout.
 
 use super::manifest::MAX_MANIFEST_BYTES;
 use isolock_cas::{Sha256Digest, SHARD_SIZE_BYTES};
 use isolock_plan::profile::{identifier, public_source};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
-const MARKER_PATH: &str = "isolock-storage.json";
-const MARKER: &[u8] = b"{\"schema-version\":1,\"format\":\"reviewed-artifacts\"}\n";
-const MAX_TREE_BYTES: u64 = 1500 * 1024 * 1024;
+pub(super) const MARKER_PATH: &str = "isolock-storage.json";
+pub(super) const MARKER: &[u8] = b"{\"schema-version\":1,\"format\":\"reviewed-artifacts\"}\n";
+pub(super) const MAX_TREE_BYTES: u64 = 1500 * 1024 * 1024;
+const MIGRATION: &str = "reviewed epoch migration requires a marked, verified-raw reviewed-artifact snapshot; re-ingest original files using a reviewed manifest into an empty isolock/vN (use directory transport for sharded originals)";
+
+#[derive(Clone)]
+pub(super) struct Blob {
+    pub object: String,
+    pub size: u64,
+}
 
 pub struct Publisher {
     root: PathBuf,
     staging: tempfile::TempDir,
+    hooks: PathBuf,
     remote: String,
-    reference: String,
-    parent: Option<String>,
-    entries: BTreeMap<String, String>,
+    pub(super) reference: String,
+    pub(super) parent: Option<String>,
+    pub(super) entries: BTreeMap<String, Blob>,
 }
 
 impl Publisher {
     pub fn open(root: &Path, remote: &str, reference: &str) -> Result<Self, String> {
-        let generation = reference.strip_prefix("isolock/v").unwrap_or_default();
-        if generation.starts_with('0')
-            || generation.is_empty()
-            || !generation.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return Err("publication requires a storage reference isolock/vN; code branches and tags are forbidden".into());
-        }
+        generation(reference)?;
+        let common = code_git(
+            root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        let hooks = code_git(
+            root,
+            &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+        )?;
+        let format = code_git(root, &["rev-parse", "--show-object-format"])?;
         let mut publisher = Self {
             root: root.into(),
             staging: tempfile::tempdir().map_err(|_| "cannot create a private Git index")?,
+            hooks: text(&hooks)?.into(),
             remote: String::new(),
             reference: format!("refs/heads/{reference}"),
             parent: None,
             entries: BTreeMap::new(),
         };
-        publisher.run(&["rev-parse", "--git-dir"], "repository discovery")?;
+        // Preserve repository-local author, credential and hook configuration, but
+        // isolate objects, refs, FETCH_HEAD and shallow state as well as the index.
+        let output = clean_git(root)
+            .args(["init", "--bare", "--quiet"])
+            .arg(format!("--object-format={}", text(&format)?))
+            .arg(publisher.staging.path().join("git"))
+            .output()
+            .map_err(|_| "cannot start Git publication")?;
+        checked(output, "private repository initialization")?;
+        let output = clean_git(root)
+            .args(["config", "--file"])
+            .arg(publisher.staging.path().join("git/config"))
+            .args(["--add", "include.path"])
+            .arg(Path::new(text(&common)?).join("config"))
+            .output()
+            .map_err(|_| "cannot configure private Git repository")?;
+        checked(output, "private repository configuration")?;
         publisher.remote = publisher.remote(remote)?;
-        publisher.fetch_parent()?;
+        publisher.parent = publisher.fetch_ref(&publisher.reference)?;
         if let Some(parent) = publisher.parent.as_deref() {
-            let tree = publisher.run(&["ls-tree", "-rlz", parent], "storage tree inspection")?;
-            publisher.entries = parse_tree(&tree)?;
+            publisher.entries = publisher.snapshot(parent)?;
             if publisher.read(MARKER_PATH)?.as_deref() != Some(MARKER) {
-                return Err(
-                    "storage reference is not an initialized reviewed-artifact snapshot".into(),
-                );
+                return Err(format!("storage reference is not an initialized reviewed-artifact snapshot; {MIGRATION}"));
             }
             publisher.run(&["read-tree", parent], "private index initialization")?;
         } else {
@@ -58,17 +83,13 @@ impl Publisher {
     }
 
     fn command(&self, arguments: &[&str]) -> Command {
-        let mut command = Command::new("git");
+        let mut command = clean_git(&self.root);
         command
-            .arg("-C")
-            .arg(&self.root)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_COMMON_DIR")
-            .env_remove("GIT_OBJECT_DIRECTORY")
-            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .env("GIT_DIR", self.staging.path().join("git"))
+            .env("GIT_WORK_TREE", &self.root)
             .env("GIT_INDEX_FILE", self.staging.path().join("index"))
-            .env("GIT_TERMINAL_PROMPT", "0")
+            .arg("-c")
+            .arg(format!("core.hooksPath={}", self.hooks.display()))
             .args(arguments);
         command
     }
@@ -80,11 +101,7 @@ impl Publisher {
     }
 
     pub fn run(&self, arguments: &[&str], operation: &str) -> Result<Vec<u8>, String> {
-        let output = self.output(arguments)?;
-        if !output.status.success() {
-            return Err(format!("Git {operation} failed; check repository access, author configuration, and storage history"));
-        }
-        Ok(output.stdout)
+        checked(self.output(arguments)?, operation)
     }
 
     fn remote(&self, remote: &str) -> Result<String, String> {
@@ -96,9 +113,7 @@ impl Publisher {
             return Err("invalid publication remote".into());
         }
         let bytes = self.run(&["remote", "get-url", "--push", remote], "remote lookup")?;
-        let source = std::str::from_utf8(&bytes)
-            .map_err(|_| "remote URL is not UTF-8")?
-            .trim();
+        let source = text(&bytes)?;
         self.local_or_https(source)?.ok_or_else(|| {
             "publication remote must be a local directory or public HTTPS URL".into()
         })
@@ -131,17 +146,17 @@ impl Publisher {
         Ok(None)
     }
 
-    fn fetch_parent(&mut self) -> Result<(), String> {
+    pub(super) fn fetch_ref(&self, reference: &str) -> Result<Option<String>, String> {
         let output = self.output(&[
             "ls-remote",
             "--exit-code",
             "--heads",
             "--",
             &self.remote,
-            &self.reference,
+            reference,
         ])?;
         if output.status.code() == Some(2) {
-            return Ok(());
+            return Ok(None);
         }
         if !output.status.success() {
             return Err(
@@ -153,39 +168,81 @@ impl Publisher {
                 "fetch",
                 "--quiet",
                 "--no-tags",
-                "--depth=1",
+                "--no-recurse-submodules",
+                "--update-shallow",
                 "--",
                 &self.remote,
-                &self.reference,
+                reference,
             ],
-            "storage fetch",
+            "complete storage history fetch",
         )?;
-        self.parent = Some(object_id(&self.run(
+        if text(&self.run(
+            &["rev-parse", "--is-shallow-repository"],
+            "history completeness inspection",
+        )?)? != "false"
+        {
+            return Err("storage history is shallow; cumulative-history accounting requires a complete remote history".into());
+        }
+        Ok(Some(object_id(&self.run(
             &["rev-parse", "--verify", "FETCH_HEAD^{commit}"],
             "storage commit lookup",
-        )?)?);
-        Ok(())
+        )?)?))
     }
 
-    pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
-        if !self.entries.contains_key(path) {
-            return Ok(None);
-        }
-        let parent = self
-            .parent
-            .as_ref()
-            .ok_or("storage parent is unavailable")?;
-        let object = format!("{parent}:{path}");
+    pub(super) fn read_at(&self, commit: &str, path: &str) -> Result<Vec<u8>, String> {
+        let object = format!("{commit}:{path}");
         let size = self.run(&["cat-file", "-s", &object], "storage object inspection")?;
-        if std::str::from_utf8(&size)
+        if text(&size)?
+            .parse::<u64>()
             .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
             .is_none_or(|size| size > MAX_MANIFEST_BYTES)
         {
             return Err("storage metadata exceeds 4 MiB".into());
         }
         self.run(&["show", &object], "storage metadata retrieval")
-            .map(Some)
+    }
+
+    pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
+        let Some(blob) = self.entries.get(path) else {
+            return Ok(None);
+        };
+        if blob.size > MAX_MANIFEST_BYTES {
+            return Err("storage metadata exceeds 4 MiB".into());
+        }
+        self.run(
+            &["cat-file", "blob", &blob.object],
+            "storage metadata retrieval",
+        )
+        .map(Some)
+    }
+
+    pub(super) fn verify_cas(&self, digest: &Sha256Digest) -> Result<(), String> {
+        let path = format!("cas/{}", digest.sharded_path());
+        let blob = self.entries.get(&path).ok_or("retained closure is missing an original/input CAS blob; re-ingest the reviewed original before migration")?;
+        let temporary = self.staging.path().join("retained-original");
+        let file = fs::File::create(&temporary)
+            .map_err(|_| "cannot stage retained original verification")?;
+        let output = self
+            .command(&["cat-file", "blob", &blob.object])
+            .stdout(Stdio::from(file))
+            .output()
+            .map_err(|_| "cannot start retained original verification")?;
+        checked(output, "retained original retrieval")?;
+        if isolock_cas::digest_file(&temporary).map_err(|error| error.to_string())? != *digest {
+            return Err(
+                "retained original/input SHA-256 mismatch; refusing epoch migration".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool, String> {
+        let output = self.output(&["merge-base", "--is-ancestor", ancestor, descendant])?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err("cannot verify retained storage ancestry".into()),
+        }
     }
 
     pub fn put_bytes(&mut self, path: &str, bytes: &[u8], mutable: bool) -> Result<(), String> {
@@ -209,29 +266,57 @@ impl Publisher {
         let source = source
             .to_str()
             .ok_or("publication input path is not UTF-8")?;
-        let object = object_id(&self.run(&["hash-object", "-w", "--", source], "blob staging")?)?;
+        let object = object_id(&self.run(
+            &["hash-object", "-w", "--no-filters", "--", source],
+            "blob staging",
+        )?)?;
         if self
             .entries
             .get(path)
-            .is_some_and(|existing| existing != &object)
+            .is_some_and(|existing| existing.object != object)
             && !mutable
         {
             return Err(
                 "refusing to change an immutable published artifact or review record".into(),
             );
         }
+        self.stage(
+            path,
+            Blob {
+                object,
+                size: metadata.len(),
+            },
+        )
+    }
+
+    fn stage(&mut self, path: &str, blob: Blob) -> Result<(), String> {
         self.run(
             &[
                 "update-index",
                 "--add",
                 "--cacheinfo",
                 "100644",
-                &object,
+                &blob.object,
                 path,
             ],
             "private index staging",
         )?;
-        self.entries.insert(path.into(), object);
+        self.entries.insert(path.into(), blob);
+        Ok(())
+    }
+
+    pub(super) fn retain(&mut self, paths: &BTreeSet<String>) -> Result<(), String> {
+        let entries = std::mem::take(&mut self.entries);
+        self.run(&["read-tree", "--empty"], "new orphan index initialization")?;
+        for path in paths {
+            self.stage(
+                path,
+                entries
+                    .get(path)
+                    .ok_or("retained snapshot path is missing")?
+                    .clone(),
+            )?;
+        }
         Ok(())
     }
 
@@ -241,15 +326,7 @@ impl Publisher {
             return Err("selected profile is locked to another storage source".into());
         }
         self.run(
-            &[
-                "fetch",
-                "--quiet",
-                "--no-tags",
-                "--depth=1",
-                "--",
-                &self.remote,
-                &commit,
-            ],
+            &["fetch", "--quiet", "--no-tags", "--", &self.remote, &commit],
             "locked payload commit fetch",
         )?;
         Ok(())
@@ -264,10 +341,21 @@ impl Publisher {
         let source = source
             .to_str()
             .ok_or("publication input path is not UTF-8")?;
-        let expected =
-            object_id(&self.run(&["hash-object", "--", source], "payload verification")?)?;
+        let expected = object_id(&self.run(
+            &["hash-object", "--no-filters", "--", source],
+            "payload verification",
+        )?)?;
+        self.verify_object(commit, relative, &expected)
+    }
+
+    pub(super) fn verify_object(
+        &self,
+        commit: &str,
+        path: &str,
+        expected: &str,
+    ) -> Result<(), String> {
         let actual = object_id(&self.run(
-            &["rev-parse", "--verify", &format!("{commit}:{relative}")],
+            &["rev-parse", "--verify", &format!("{commit}:{path}")],
             "locked payload lookup (publish reviewed originals before locking a profile)",
         )?)?;
         if actual != expected {
@@ -278,25 +366,104 @@ impl Publisher {
         Ok(())
     }
 
-    pub fn finish(self, message: &str) -> Result<String, String> {
-        let tree = object_id(&self.run(&["write-tree"], "storage tree creation")?)?;
-        // Keep a bounded live snapshot. Automatic epoch migration is a separate feature.
-        parse_tree(&self.run(&["ls-tree", "-rlz", &tree], "storage budget inspection")?)?;
-        if let Some(parent) = self.parent.as_deref() {
-            let old_tree = object_id(&self.run(
-                &["rev-parse", &format!("{parent}^{{tree}}")],
-                "parent tree lookup",
-            )?)?;
-            if old_tree == tree {
-                return Ok(format!("Storage is up to date: {parent}"));
+    pub(super) fn tree(&self) -> Result<String, String> {
+        object_id(&self.run(&["write-tree"], "storage tree creation")?)
+    }
+
+    pub(super) fn snapshot(&self, tree: &str) -> Result<BTreeMap<String, Blob>, String> {
+        parse_tree(&self.run(&["ls-tree", "-rlz", tree], "storage tree inspection")?)
+    }
+
+    pub(super) fn live_bytes(&self) -> u64 {
+        self.entries.values().map(|blob| blob.size).sum()
+    }
+
+    pub(super) fn history_bytes(&self) -> Result<u64, String> {
+        let mut blobs: BTreeMap<String, u64> = self
+            .entries
+            .values()
+            .map(|blob| (blob.object.clone(), blob.size))
+            .collect();
+        if let Some(parent) = &self.parent {
+            let names = self.run(
+                &["rev-list", "--objects", "--no-object-names", parent],
+                "complete history enumeration",
+            )?;
+            let input = self.staging.path().join("history-objects");
+            fs::write(&input, names).map_err(|_| "cannot stage history accounting")?;
+            let output = self
+                .command(&[
+                    "cat-file",
+                    "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+                ])
+                .stdin(Stdio::from(
+                    fs::File::open(input).map_err(|_| "cannot read history accounting")?,
+                ))
+                .output()
+                .map_err(|_| "cannot start history accounting")?;
+            let objects = checked(output, "history blob accounting")?;
+            for line in text(&objects)?.lines() {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                if fields.len() != 3 {
+                    return Err(
+                        "incomplete storage history; cannot account for reachable objects".into(),
+                    );
+                }
+                if fields[1] == "blob" {
+                    blobs.insert(
+                        object_id(fields[0].as_bytes())?,
+                        fields[2].parse().map_err(|_| "invalid history blob size")?,
+                    );
+                }
             }
         }
-        let mut arguments = vec!["commit-tree", &tree];
-        if let Some(parent) = self.parent.as_deref() {
+        blobs.values().try_fold(0_u64, |total, size| {
+            total
+                .checked_add(*size)
+                .ok_or_else(|| "history byte count overflow".into())
+        })
+    }
+
+    pub(super) fn commit(
+        &self,
+        tree: &str,
+        parent: Option<&str>,
+        message: &str,
+    ) -> Result<String, String> {
+        let mut arguments = vec!["commit-tree", tree];
+        if let Some(parent) = parent {
             arguments.extend(["-p", parent]);
         }
         arguments.extend(["-m", message]);
-        let commit = object_id(&self.run(&arguments, "audit commit creation")?)?;
+        object_id(&self.run(&arguments, "audit commit creation")?)
+    }
+
+    pub(super) fn atomic_epoch(
+        &self,
+        seal: &str,
+        target: &str,
+        reference: &str,
+    ) -> Result<(), String> {
+        self.run(&["push", "--porcelain", "--atomic", "--", &self.remote, &format!("{seal}:{}", self.reference), &format!("{target}:refs/heads/{reference}")],
+            "atomic non-force epoch publication (atomic support required; outcome may be unknown after connection failure; inspect refs and retry the same reviewed policy)")?;
+        Ok(())
+    }
+
+    pub fn finish(self, message: &str) -> Result<String, String> {
+        if self.live_bytes() > MAX_TREE_BYTES {
+            return Err("storage snapshot exceeds publication limits; use directory transport or an explicitly reviewed new epoch".into());
+        }
+        let tree = self.tree()?;
+        if let Some(parent) = self.parent.as_deref() {
+            if object_id(&self.run(
+                &["rev-parse", &format!("{parent}^{{tree}}")],
+                "parent tree lookup",
+            )?)? == tree
+            {
+                return Ok(format!("Storage is up to date: {parent}"));
+            }
+        }
+        let commit = self.commit(&tree, self.parent.as_deref(), message)?;
         self.run(
             &[
                 "push",
@@ -311,19 +478,74 @@ impl Publisher {
     }
 }
 
-fn object_id(bytes: &[u8]) -> Result<String, String> {
-    let value = std::str::from_utf8(bytes)
-        .map_err(|_| "Git object ID is not UTF-8")?
-        .trim();
-    if !matches!(value.len(), 40 | 64) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+fn clean_git(root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(root);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_SHALLOW_FILE",
+    ] {
+        command.env_remove(name);
+    }
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    command
+}
+
+fn checked(output: Output, operation: &str) -> Result<Vec<u8>, String> {
+    if !output.status.success() {
+        return Err(format!("Git {operation} failed; check repository access, author configuration, and storage history"));
+    }
+    Ok(output.stdout)
+}
+
+fn code_git(root: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
+    checked(
+        clean_git(root)
+            .args(arguments)
+            .output()
+            .map_err(|_| "cannot start Git publication")?,
+        "repository discovery",
+    )
+}
+
+pub(super) fn text(bytes: &[u8]) -> Result<&str, String> {
+    std::str::from_utf8(bytes)
+        .map(str::trim)
+        .map_err(|_| "Git metadata is not UTF-8".into())
+}
+
+pub(super) fn object_id(bytes: &[u8]) -> Result<String, String> {
+    let value = text(bytes)?;
+    if !matches!(value.len(), 40 | 64)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
         return Err("invalid Git object ID".into());
     }
     Ok(value.into())
 }
 
-fn parse_tree(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
+pub(super) fn generation(reference: &str) -> Result<u64, String> {
+    let generation = reference.strip_prefix("isolock/v").unwrap_or_default();
+    if generation.starts_with('0')
+        || generation.is_empty()
+        || !generation.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("publication requires a storage reference isolock/vN; code branches and tags are forbidden".into());
+    }
+    generation
+        .parse()
+        .map_err(|_| "storage generation exceeds the supported integer range".into())
+}
+
+fn parse_tree(bytes: &[u8]) -> Result<BTreeMap<String, Blob>, String> {
     let mut entries = BTreeMap::new();
-    let mut total = 0_u64;
     for entry in bytes
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty())
@@ -333,22 +555,31 @@ fn parse_tree(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
         let fields = metadata.split_whitespace().collect::<Vec<_>>();
         if fields.len() != 4 || fields[0] != "100644" || fields[1] != "blob" || !allowed_path(path)
         {
-            return Err("storage reference contains non-snapshot paths or unsafe modes".into());
+            return Err(format!(
+                "storage reference contains non-snapshot paths or unsafe modes; {MIGRATION}"
+            ));
         }
         let size = fields[3]
             .parse::<u64>()
             .map_err(|_| "invalid storage blob size")?;
-        total = total.checked_add(size).ok_or("storage size overflow")?;
-        if size > SHARD_SIZE_BYTES || total > MAX_TREE_BYTES {
-            return Err("storage snapshot exceeds publication limits; use directory transport or an explicitly reviewed new epoch".into());
+        if size > SHARD_SIZE_BYTES {
+            return Err(format!(
+                "storage snapshot exceeds publication limits; {MIGRATION}"
+            ));
         }
-        entries.insert(path.into(), object_id(fields[2].as_bytes())?);
+        entries.insert(
+            path.into(),
+            Blob {
+                object: object_id(fields[2].as_bytes())?,
+                size,
+            },
+        );
     }
     Ok(entries)
 }
 
 fn allowed_path(path: &str) -> bool {
-    if matches!(path, MARKER_PATH | "plan.json") {
+    if matches!(path, MARKER_PATH | "plan.json" | "epoch.json") {
         return true;
     }
     if let Some(relative) = path.strip_prefix("cas/") {

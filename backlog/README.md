@@ -40,12 +40,13 @@ backlog/
 | **m-4** | CLI Execution and Environment Bootstrap | `ISO-10`, `ISO-11` | Complete |
 | **m-5** | Profiled Environment Materialization and Configuration | `ISO-13` through `ISO-18` | Complete |
 | **m-6** | Code Quality and Proxy Resilience | `ISO-19` through `ISO-22` | Complete |
-| **m-7** | Reviewed Ingestion and Storage Publication | `ISO-23`, `ISO-24` | In progress: ingestion delivered; rollover To Do |
+| **m-7** | Reviewed Ingestion and Storage Publication | `ISO-23`, `ISO-24` | Complete |
 
 Milestone completion refers to its scoped tasks, not every architectural aspiration.
 ISO-23 implements reviewed local/explicit-connected ingestion, linear publication,
-conservative GC roots, and a cold offline consumer. **Automatic epoch rollover is not
-implemented**; ISO-24 tracks it and reviewed snapshot migration. Direct registry solving,
+conservative GC roots, and a cold offline consumer. ISO-24 adds reviewed, source-pinned
+atomic rollover, verified batch/profile retention, safe retries, and explicit successor
+adoption. Unsupported legacy/sharded formats receive conversion guidance. Direct registry solving,
 selective Git/HTTP transport, connected proxy-miss fetching, and broader native publication
 coverage remain later work. The PR guard verifies published snapshot completeness rather
 than discovering dependencies from arbitrary project lockfiles.
@@ -82,7 +83,7 @@ than discovering dependencies from arbitrary project lockfiles.
 
 - **[CAS Sharding](features/cas-sharding.feature)**
 - **[Reviewed Ingestion and Publication](features/reviewed-ingestion.feature)**
-- **[Deferred Epoch Rollover Specification](features/git-orphan-branch.feature)**
+- **[Reviewed Epoch Rollover Contracts](features/git-orphan-branch.feature)**
 - **[Proxy: PyPI](features/proxy-pypi.feature)**
 - **[Proxy: Conda](features/proxy-conda.feature)**
 - **[Proxy: NPM](features/proxy-npm.feature)**

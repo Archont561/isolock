@@ -30,6 +30,9 @@ pub struct Push {
     /// Git remote name, local repository directory, or credential-free HTTPS URL.
     #[clifacet(long, default_value = "origin")]
     pub(super) remote: String,
+    /// Reviewed source-pinned budgets and retention roots for automatic epoch rollover.
+    #[clifacet(long)]
+    pub(super) epoch_policy: Option<PathBuf>,
     #[clifacet(long, value_parser = ["cargo", "pypi", "npm", "conda", "generic"])]
     pub(super) registry: Option<String>,
     pub(super) packages: Vec<String>,

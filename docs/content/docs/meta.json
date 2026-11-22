@@ -4,6 +4,7 @@
     "index",
     "getting-started",
     "ingestion",
+    "storage-epochs",
     "profiles",
     "proxy",
     "quality",

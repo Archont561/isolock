@@ -1,10 +1,12 @@
 //! Explicit reviewed-byte import. Planning and restoration never acquire upstream bytes.
 
 mod acquire;
+mod epoch;
 mod git;
 mod manifest;
 mod profiles;
 mod publish;
+mod retention;
 mod roots;
 
 pub use publish::publish;

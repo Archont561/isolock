@@ -55,7 +55,7 @@ impl Manifest {
         Ok(manifest)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub(super) fn validate(&self) -> Result<(), String> {
         if self.schema_version != 1 {
             return Err("unsupported ingestion schema-version".into());
         }

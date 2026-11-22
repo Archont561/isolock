@@ -137,6 +137,7 @@ Feature: Reviewed artifact ingestion and explicit storage publication
       | missing profile       | requires --profile              |
       | missing platform      | requires --platform             |
       | mixed package flags   | cannot select registry          |
+      | mixed epoch policy    | requires a reviewed artifact batch |
       | directory plan        | locked to Git                   |
       | different destination | another storage source          |
       | unpublished input     | locked payload lookup           |
