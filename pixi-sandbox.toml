@@ -9,6 +9,7 @@ max_repository_push_mib = 2048
 max_restore_required_mib = 8192
 
 [[bundle]]
-name = "developer"
+# A separate vendor generation keeps the pre-upgrade developer sandbox usable.
+name = "developer-clifacet-0-10"
 environments = ["default"]
 platforms = ["linux-64"]

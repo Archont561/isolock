@@ -577,9 +577,9 @@ checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 
 [[package]]
 name = "clifacet"
-version = "0.5.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e38f0e9ca09e7011608e6b3ff9f5e12f6093ed583acab87462da607d1e1cfbd3"
+checksum = "7418fcd11266be84a8d406c72cc0e193aef7464ee95aceef25b5a403a267cab5"
 dependencies = [
  "clap",
  "clifacet-macros",
@@ -588,9 +588,9 @@ dependencies = [
 
 [[package]]
 name = "clifacet-macros"
-version = "0.5.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96ef49e8acbb72638e1c28e3a2eab47386409fc91e39f3ba87fb00264294517b"
+checksum = "6b8b1b97a79fab66609531f39ed025ed5841c9ff6e4eeac066b9693fc0d0b0cd"
 dependencies = [
  "heck",
  "proc-macro2",
