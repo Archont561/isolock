@@ -83,12 +83,17 @@ configuration remains isolated; no additional source exclusions are used.
 
 The CLI uses crates.io `clifacet` 0.10 with default features disabled; optional interactive,
 async, MCP, and TUI integrations are not enabled. The lockfile pins both `clifacet` and
-`clifacet-macros` to 0.10.0 with their registry checksums. The application uses one typed
-command tree and explicit input bridges; strict warnings stay enabled without optional
-caller-side feature declarations or vendor patches. Black-box scenarios cover generated
-help, usage errors before initialization, nested global overrides, child argument tails,
-streams and exit statuses, plus clean-plan success, CI drift failure, and workstation
-inspection. Existing profile and proxy suites exercise the same real binary.
+`clifacet-macros` to 0.10.0 with their registry checksums. Commands use the documented
+`app`/`commands` controller authoring style and declarative groups, not handwritten
+request/dispatch plumbing. Version 0.10's controller macros emit optional-feature `cfg`
+names in their consuming crate. `crates/isolock/build.rs` registers only those known names
+with Rust's `check-cfg`; it enables no Cargo features and keeps unknown-cfg warnings and
+strict Clippy active. No vendor patches or optional-feature dependencies are added.
+
+Black-box scenarios cover generated help, usage errors before initialization, nested
+global overrides, child argument tails, streams and exit statuses, plus clean-plan
+success, CI drift failure, and workstation inspection. Existing profile and proxy suites
+exercise the same real binary.
 
 The reviewed developer bundle is `developer-clifacet-0-10`. Run `bash scripts/restore.sh`
 to restore it, including the matching Cargo vendor source, before offline validation.

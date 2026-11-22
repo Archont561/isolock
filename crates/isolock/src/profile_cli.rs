@@ -1,7 +1,6 @@
 //! Execute typed profile operations without inspecting or reparsing process arguments.
 
 use crate::{config, materialize, profile_store, transport};
-use clap::Subcommand;
 use isolock_cas::Sha256Digest;
 use isolock_plan::profile::{build_profiles, changed_input, PlanRequest, ProfileManifest};
 use profile_store::{StoreLease, Workspace};
@@ -37,16 +36,9 @@ pub enum Operation {
     },
 }
 
-#[derive(Debug, Clone, Subcommand)]
 pub enum Configuration {
-    /// Validate the layered configuration.
-    #[command(display_name = "isolock")]
     Check,
-    /// Show the effective configuration.
-    #[command(display_name = "isolock")]
     Show,
-    /// Explain a configuration value and its source.
-    #[command(display_name = "isolock")]
     Explain { path: String },
 }
 

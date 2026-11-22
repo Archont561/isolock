@@ -24,12 +24,19 @@ crates/
 
 ## Command-line boundary
 
-`main` delegates to one non-interactive `clifacet::App`. The root command in `cli` flattens
-typed configuration overrides and declares the command tree with `clifacet::subcommands`.
-Clifacet parses arguments, validates the selected request, dispatches its handler, and
-renders help or failures. Profile and proxy operations receive typed values; they do not
-inspect or reparse process arguments. The plan handler selects profile planning or the
-legacy airlock check from those values and the presence of project configuration.
+`main` delegates to one non-interactive `clifacet::App::for_cli` pipeline. The root controller
+in `cli` is declared with `#[clifacet::app]`; its commands are methods in a
+`#[clifacet::commands]` implementation. Clifacet generates the command enum, collection,
+validation, dispatch, and lifecycle wiring, without application-authored request enums
+or per-command `Command`/`Handler` implementations.
+
+`#[clifacet::group]` declares argument groups that retain command metadata such as the
+`bootstrap` alias, application version label, and opaque `exec` argument tail. The nested
+configuration controller uses `#[clifacet::group(commands)]` and
+`#[clifacet::commands(group)]`, with parsed overrides supplied through context extraction.
+Profile and proxy operations receive typed values and never reparse process arguments.
+The plan method selects profile planning or the legacy airlock check from those values
+and the presence of project configuration.
 
 Usage errors exit with status 2 and execution failures with status 1. Help and version
 requests exit successfully before loading configuration or creating application state.

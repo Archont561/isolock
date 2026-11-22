@@ -1,140 +1,180 @@
-//! One clifacet pipeline owns parsing, validation, command dispatch and diagnostics.
+//! Declarative controllers own command authoring; one clifacet application runs them.
 
+mod configuration;
 mod plan;
 mod profiles;
 mod proxy;
 
 use crate::config::Overrides;
+use crate::profile_cli::{self, Operation};
+use crate::proxy_cli;
 use clifacet::contract::ExitPolicy;
 use clifacet::policy::Policy;
-use clifacet::{App, Command, Failure, Handler};
-use profiles::{Config, Export, Fetch, Gc, Plan, SeedManifest, Sync};
-use proxy::{Exec, Ingest, Serve};
+use clifacet::{App, Failure};
+use configuration::Config;
+use profiles::{Export, Fetch, Gc, NoArguments, Plan, Sync};
+use proxy::{Exec, Ingest};
 use std::cell::Cell;
 use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
+use std::rc::Rc;
 
-#[clifacet::command(input = Invocation)]
-#[derive(Clone)]
-#[command(
+#[clifacet::app(
     name = "isolock",
-    version = isolock_core::VERSION,
+    version,
     about = "Hermetic dependency airlock manager",
+    commands
+)]
+#[command(
     propagate_version = true,
+    subcommand_required = true,
     arg_required_else_help = true
 )]
-pub(crate) struct Isolock {
+pub struct Isolock {
     #[command(flatten)]
-    #[clifacet(skip)]
     overrides: Overrides,
-    #[clifacet(subcommands)]
-    command: Commands,
+    // The runner initializes this shared completion state lazily, never for help/errors.
+    #[clifacet(context)]
+    child_status: Rc<Cell<Option<ExitCode>>>,
 }
 
-pub(crate) struct Invocation {
-    command: Request,
-}
-
-// Subcommands report the application version, not a separate per-command version.
-#[clifacet::subcommands(input = Request, output = Output, context = Overrides)]
-#[derive(Clone)]
-enum Commands {
+#[clifacet::commands]
+impl Isolock {
     /// Validate or explain configuration without fetching artifacts.
-    #[command(display_name = "isolock")]
-    Config(Config),
+    pub fn config(&self, #[clifacet(subcommand)] config: Config) -> Result<String, Failure> {
+        config.init_from_parent(&self.overrides);
+        config.execute()
+    }
+
     /// Generate/check a profile plan, or inspect the legacy airlock plan.
-    #[command(display_name = "isolock")]
-    Plan(Plan),
+    pub fn plan(&self, #[clifacet(subcommand)] options: Plan) -> Result<String, Failure> {
+        let flags = &self.overrides;
+        let profile = flags.profile.is_some()
+            || flags.platform.is_some()
+            || flags.user_config.is_some()
+            || flags.config != Path::new("isolock.toml")
+            || Path::new("isolock.toml").is_file()
+            || options.locked
+            || options.check;
+        if profile {
+            profile_cli::run(
+                flags,
+                Operation::Plan {
+                    ci: options.ci,
+                    locked: options.locked,
+                    check: options.check,
+                },
+            )
+            .map(|()| String::new())
+            .map_err(Failure::execution)
+        } else {
+            plan::run(options.ci, flags)
+        }
+    }
+
     /// Retrieve the selected manifest graph and its missing blobs.
-    #[command(display_name = "isolock")]
-    Fetch(Fetch),
+    pub fn fetch(&self, #[clifacet(subcommand)] options: Fetch) -> Result<(), String> {
+        profile_cli::run(
+            &self.overrides,
+            Operation::Fetch {
+                manifest: options.manifest,
+            },
+        )
+    }
+
     /// Materialize the selected locked profile.
-    #[clifacet(visible_alias = "bootstrap")]
-    #[command(display_name = "isolock")]
-    Sync(Sync),
+    pub fn sync(&self, #[clifacet(subcommand)] options: Sync) -> Result<(), String> {
+        profile_cli::run(
+            &self.overrides,
+            Operation::Sync {
+                locked: options.locked,
+                offline: options.offline,
+                manifest: options.manifest,
+            },
+        )
+    }
+
     /// Export the selected profile to an offline directory snapshot.
-    #[command(display_name = "isolock")]
-    Export(Export),
+    pub fn export(&self, #[clifacet(subcommand)] options: Export) -> Result<(), String> {
+        profile_cli::run(
+            &self.overrides,
+            Operation::Export {
+                output: options.output,
+            },
+        )
+    }
+
     /// Write the reviewed POSIX seed manifest and bootstrap script.
-    #[command(display_name = "isolock")]
-    SeedManifest(SeedManifest),
+    pub fn seed_manifest(
+        &self,
+        #[clifacet(subcommand)] _options: NoArguments,
+    ) -> Result<(), String> {
+        profile_cli::run(&self.overrides, Operation::SeedManifest {})
+    }
+
     /// Report unreachable CAS blobs; deletion requires --apply.
-    #[command(display_name = "isolock")]
-    Gc(Gc),
+    pub fn gc(&self, #[clifacet(subcommand)] options: Gc) -> Result<(), String> {
+        profile_cli::run(
+            &self.overrides,
+            Operation::Gc {
+                apply: options.apply,
+                root: options.root,
+            },
+        )
+    }
+
     /// Serve the locked registry snapshot on loopback.
-    #[command(display_name = "isolock")]
-    Serve(Serve),
+    pub fn serve(&self, #[clifacet(subcommand)] _options: NoArguments) -> Result<(), String> {
+        proxy_cli::run_proxy_server(&self.overrides)
+    }
+
     /// Run a child command with the local registry proxy.
-    #[command(display_name = "isolock")]
-    Exec(Exec),
+    pub fn exec(&self, #[clifacet(subcommand)] options: Exec) -> Result<(), Failure> {
+        let (program, arguments) = options
+            .arguments
+            .split_first()
+            .ok_or_else(|| Failure::validation("expected a child command"))?;
+        let command = proxy_cli::ExecCommand { program, arguments };
+        let status = proxy_cli::run_child_with_proxy(&command, &self.overrides)
+            .map_err(Failure::execution)?;
+        (*self.child_status).set(Some(status));
+        Ok(())
+    }
+
     /// Legacy ingestion entrypoint.
-    #[command(display_name = "isolock")]
-    Ingest(Ingest),
-}
-
-pub(crate) enum Request {
-    Config(Config),
-    Plan(Plan),
-    Fetch(Fetch),
-    Sync(Sync),
-    Export(Export),
-    SeedManifest(SeedManifest),
-    Gc(Gc),
-    Serve(Serve),
-    Exec(Exec),
-    Ingest(Ingest),
-}
-
-impl Command for Isolock {
-    type Input = Invocation;
-    type Output = Output;
-
-    fn execute(&self, input: Invocation) -> Result<Output, Failure> {
-        self.command.handle(input.command, &self.overrides)
-    }
-}
-
-/// Text, an already-reported operation, and a child status must not be conflated.
-pub(crate) enum Output {
-    Text(String),
-    Done,
-    Child(ExitCode),
-}
-
-impl From<String> for Output {
-    fn from(text: String) -> Self {
-        Self::Text(text)
-    }
-}
-impl From<()> for Output {
-    fn from((): ()) -> Self {
-        Self::Done
-    }
-}
-impl From<ExitCode> for Output {
-    fn from(code: ExitCode) -> Self {
-        Self::Child(code)
+    #[expect(
+        clippy::unused_self,
+        reason = "declarative command methods require a receiver; the ingestion stub has no shared state"
+    )]
+    pub fn ingest(&self, #[clifacet(subcommand)] options: Ingest) -> String {
+        // Preserve the existing placeholder; implementing ingestion is a separate task.
+        let _ = (options.registry, options.packages);
+        "isolock ingest: airlock package ingested into local CAS store".into()
     }
 }
 
 pub(crate) fn run() -> ExitCode {
-    let child_status = Cell::new(ExitCode::SUCCESS);
-    let status = App::<Isolock>::new()
+    let child_status = Rc::new(Cell::new(None));
+    let completed = Rc::clone(&child_status);
+    let status = App::<Isolock, Isolock, clifacet::Plain, _>::for_cli()
         .policy(Policy::non_interactive())
         .exit(ExitPolicy::standard())
-        .render(|output: Output, out: &mut dyn Write| match output {
-            Output::Text(text) => writeln!(out, "{text}"),
-            Output::Done => Ok(()),
-            Output::Child(code) => {
-                child_status.set(code);
+        .after_success(move |_, context| {
+            completed.set(context.get());
+            Ok(())
+        })
+        .render(|text: String, out: &mut dyn Write| {
+            if text.is_empty() {
                 Ok(())
+            } else {
+                writeln!(out, "{text}")
             }
         })
         .run();
-    // clifacet owns usage/validation/execution errors. A completed child owns its
-    // exact status (including signals), but may never hide a runner/rendering failure.
+    // A child owns its exact status, but cannot hide a runner or rendering failure.
     if status == ExitCode::SUCCESS {
-        child_status.get()
+        child_status.get().unwrap_or(status)
     } else {
         status
     }
