@@ -36,7 +36,22 @@ fn http_get(address: &str, path: &str) -> Vec<u8> {
 #[test]
 fn test_cli_version_flag() {
     let bin = env!("CARGO_BIN_EXE_isolock");
-    for arguments in [&["--version"][..], &["plan", "--version"], &["serve", "-V"]] {
+    for arguments in [
+        &["--version"][..],
+        &["plan", "--version"],
+        &["serve", "-V"],
+        &["fetch", "--version"],
+        &["sync", "--version"],
+        &["bootstrap", "--version"],
+        &["export", "--version"],
+        &["seed-manifest", "--version"],
+        &["gc", "--version"],
+        &["ingest", "--version"],
+        &["config", "--version"],
+        &["config", "check", "--version"],
+        &["config", "show", "--version"],
+        &["config", "explain", "--version"],
+    ] {
         let output = Command::new(bin)
             .args(arguments)
             .output()
@@ -60,19 +75,6 @@ fn plan_fails_closed_when_no_expected_plan_is_available() {
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no airlock plan found"));
-}
-
-#[test]
-fn test_cli_default_usage_output() {
-    let bin = env!("CARGO_BIN_EXE_isolock");
-    let output = Command::new(bin)
-        .output()
-        .expect("runs isolock without arguments");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(&format!("isolock v{}", isolock_core::VERSION)));
-    assert!(stdout.contains("dependency airlock manager"));
 }
 
 #[test]

@@ -25,7 +25,16 @@ Verify your installation:
 
 ```sh
 isolock --version
+isolock --help
+isolock plan --help
 ```
+
+Help is generated from the same typed command tree that runs the application. An omitted
+command or unrecognized arguments produce diagnostics on stderr and exit status 2, without
+loading project configuration. Execution failures use status 1; `exec` preserves the
+child's exit status instead. Global options such as `--config` and `--profile` can appear
+before or after a subcommand, but options after an `exec` child executable belong to that
+child. `bootstrap` remains an alias for profile `sync`.
 
 ### 1. Plan Lockfiles
 

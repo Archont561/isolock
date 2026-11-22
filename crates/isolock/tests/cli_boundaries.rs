@@ -254,5 +254,5 @@ fn execution_reports_port_and_config_write_failures_without_starting_children() 
         project.run(&["exec", "/bin/true"]),
         "cannot write Cargo config",
     );
-    failure(project.run(&["exec"]), "expected a command to run");
+    failure(project.run(&["exec"]), "<COMMAND>");
 }
