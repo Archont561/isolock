@@ -54,6 +54,24 @@ and pass each registry's path validation.
 not blanket-allow the lint. Unit tests cover all recognized suffixes, uppercase and
 mixed-case rejection, query strings, and misleading trailing extensions.
 
+## Coverage reporting scope
+
+`scripts/coverage.sh` instruments the full Cargo workspace with all features and writes
+`coverage/lcov.info`. Codecov's `rust` flag covers the entire `crates/` directory, including
+core, CAS, planning, proxy, and CLI sources. New crates under that directory are included
+without maintaining a second package list. A regression scenario checks the scope against
+`Cargo.toml`, rejects stale directories, and verifies the generator/upload configuration.
+
+CI uploads that explicit LCOV file with report discovery disabled. Carryforward is disabled
+because each coverage job produces a complete workspace report; missing current data must
+not be replaced by an older report. Test source files remain excluded from Codecov's
+statistics, not from test execution. Opt-in real-profile integrations still run separately
+and their execution is not included in this coverage report.
+
+The existing 90% project and patch targets are unchanged. Expanding the old CLI-only flag
+changes the reporting denominator; compare future reports using the corrected workspace
+scope rather than interpreting that scope change as a runtime regression.
+
 ## Cargo metadata and supply-chain policy
 
 First-party packages inherit workspace keywords and the `development-tools::build-utils`
