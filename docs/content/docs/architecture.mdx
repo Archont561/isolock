@@ -51,11 +51,15 @@ Git plumbing have separate modules. Original bytes enter the configured CAS only
 selected-batch validation. Immutable ingestion objects also register conservative shared-CAS
 GC roots.
 
-Publication appends a non-force `chore(deps)` storage commit using a private index, without
-checking out storage or staging producer files. Profile publication reuses the verified
-export and checks originals against the earlier locked payload commit. Live-tree limits
-fail closed; automatic epoch rollover and registry solving are not implemented. See
-[reviewed ingestion and publication](./ingestion.mdx) for the exact schema and boundaries.
+Publication appends a non-force `chore(deps)` storage commit using a disposable repository
+and private index, without checking out storage or staging producer files. Profile
+publication reuses the verified export and checks originals against the earlier locked
+payload commit. A reviewed source-pinned epoch policy budgets live paths and distinct
+reachable historical blobs. Overflow constructs a verified retained closure and atomically
+publishes an orphan successor plus an unchanged-tree source seal. Old refs and immutable
+profile identities stay intact; adoption is explicit. Registry solving and automatic
+legacy/shard conversion remain outside this boundary. See
+[reviewed ingestion](./ingestion.mdx) and [storage epochs](./storage-epochs.mdx).
 
 ## Execution and proxy ownership
 

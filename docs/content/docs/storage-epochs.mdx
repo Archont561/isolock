@@ -1,0 +1,159 @@
+---
+title: Reviewed storage epoch rollover
+description: Bound live and historical blobs, preserve locked profiles, and publish an orphan successor atomically.
+---
+
+## Review the boundary explicitly
+
+`push --epoch-policy FILE` automatically rolls a supported storage snapshot into the next
+orphan generation **when either reviewed budget would be exceeded**. It never chooses a
+retention policy, rewrites project configuration, retires an alias, or deletes an old ref.
+Review the artifact manifest and the epoch policy together before publication.
+
+The source must already be a marked `reviewed-artifacts` snapshot produced by
+[reviewed ingestion/publication](./ingestion.mdx). Inspect its exact remote tip:
+
+```sh
+git ls-remote origin refs/heads/isolock/v1
+```
+
+Create a policy like this, replacing the placeholder commit and choosing budgets/roots
+appropriate for the reviewed closure. All fields are required; empty root lists are explicit.
+
+```json
+{
+  "schema-version": 1,
+  "source-ref": "isolock/v1",
+  "source-commit": "0000000000000000000000000000000000000000",
+  "next-ref": "isolock/v2",
+  "max-live-bytes": 1342177280,
+  "max-history-bytes": 1572864000,
+  "retain-batches": [],
+  "retain-manifests": []
+}
+```
+
+The source pin must match the configured destination and current remote tip. The successor
+must be the immediate next positive generation. Unknown fields, duplicate roots, unsupported
+schemas, invalid pins, and zero/over-limit budgets fail closed. Policies have a 4 MiB input
+limit; encoded storage metadata must also fit 4 MiB.
+
+```sh
+isolock ingest --manifest isolock.ingest.json --artifacts originals
+isolock push --manifest isolock.ingest.json --epoch-policy epoch-policy.json
+```
+
+Registry/package selections remain available. The migration record identifies the exact
+selected batch, not necessarily the entire original manifest. Rollover is an artifact
+publication operation: combining `--epoch-policy` with profile publication is rejected.
+
+## Two different budgets
+
+Both budgets are positive byte counts no greater than **1,500 MiB (1,572,864,000 bytes)**:
+
+- **Live bytes:** sum every regular file path in the candidate snapshot. An alias and an
+  immutable manifest containing identical bytes count separately because both are live paths.
+- **History bytes:** sum each distinct Git **blob object** reachable from the source epoch's
+  complete commit history or the candidate tree, once. Superseded plans and deleted originals
+  still count while their commits are reachable. Repeated occurrences of one blob do not.
+
+Publication fetches complete history into a disposable Git repository; it does not infer
+history size from a shallow checkout. Shallow storage remotes are rejected. Neither metric
+is a Git pack-size, commit/tree-object, filesystem-disk, or total-archived-generations limit.
+Unreachable objects from rejected transfers are also outside these reachable-blob budgets.
+Keeping archived refs means total remote storage can continue to grow.
+
+When both budgets fit, publication appends normally to the source, or is a no-op for an
+identical tree. Retention lists apply only on rollover. After an append, inspect the new tip
+and review a new source-pinned policy for the next publication. Without `--epoch-policy`,
+ordinary publication retains its absolute 1,500 MiB live-tree limit and does not impose a
+cumulative-history policy. A record in `epoch.json` is audit evidence, not permission for
+future unattended publication under a stale review.
+
+## What survives rollover
+
+The new snapshot retains:
+
+- The incoming reviewed batch and all batches explicitly listed in `retain-batches`.
+  Use the canonical digest in `ingestion/objects/DIGEST.json`, not a hash of pretty JSON.
+- **Every published profile alias**, its immutable manifest, and all transitive constituent
+  manifests. Extra immutable roots can be listed in `retain-manifests`, including older
+  manifest versions no longer selected by an alias.
+- Required original archives and byte-pinned input files, matching immutable artifact
+  records, and matching reviewed batch provenance. Provenance batches can describe other
+  originals that are not live retention roots; listing such a batch explicitly requires
+  its entire original closure to be available again.
+- A regenerated metadata-preserving legacy `plan.json`, the format marker, and a new
+  `epoch.json` recording the full policy and incoming batch identity.
+
+Required originals are independently SHA-256 verified. Profile payloads must also match
+those in their locked commits, and each locked commit must remain reachable through its
+original storage ref. Missing/corrupt mandatory closures fail before publication. Explicit
+incoming reviewed bytes can supply missing originals; existing immutable bytes are never
+silently replaced. An oversized retained closure is rejected rather than dropping profiles.
+
+Immutable profile bytes, provenance, storage identities, and locked payload commits are
+not rewritten. Unselected non-profile batches may leave the **new live snapshot**; the
+source snapshot and all its history remain accessible through the archived source ref.
+Automatic profile-alias retirement and archived-ref deletion are not implemented.
+
+## Atomic publication and recovery
+
+The publisher builds two meaningful updates:
+
+1. A fresh orphan successor commit with no code or previous-epoch parent.
+2. A source **seal commit**, parented by the reviewed source tip, with the **same source
+   tree**. Its structured `Isolock-Epoch-Seal:` commit-message trailer records the accepted
+   policy/batch and successor root without adding a source blob.
+
+A single non-force `git push --atomic` publishes both refs, without a force-push or
+non-atomic fallback. A source race, successor race, rejected target, or server without
+atomic support cannot accept half the reference transaction. Unreachable transferred
+objects may still remain until the remote performs its own maintenance.
+
+A connection failure can have an **unknown outcome**, even after both refs were accepted.
+Inspect the remote, then retry the **same** policy and batch. Accepted retries verify the
+seal, unchanged source tree, orphan root, migration record, complete required closure,
+budgets, and root ancestry under the successor. They are no-ops even after valid successor
+appends and do not need the producer's originals or CAS. Changed policy/batch/history or a
+missing successor fails closed. Do not force-push to recover.
+
+Normal writes to a sealed source are rejected with explicit successor guidance. The
+publisher never silently redirects a push. Producer HEAD, branch refs, working files,
+real index, Git configuration, `FETCH_HEAD`, and shallow state remain unchanged. Author,
+authentication, and hook configuration are reused in the disposable publisher repository;
+hooks operating on another repository must clear Git's repository-local environment first.
+
+## Adopt a successor deliberately
+
+Old locked consumers continue using their original ref and payload commit. Copying an
+immutable v1 manifest into v2 does **not** turn it into a v2 lock. Overriding the ref during
+`sync --locked --offline` must not bypass locked storage identity checks.
+
+Review adoption, then explicitly replan against the new payload snapshot and publish the
+new manifest separately:
+
+```sh
+isolock plan --profile rust-standalone --platform linux-64 --storage-ref isolock/v2
+isolock push --profile rust-standalone --platform linux-64 --storage-ref isolock/v2
+```
+
+These commands do not edit `isolock.toml`. Review and commit configuration/reference
+changes and the newly locked manifest through your normal project process. Existing
+consumers can remain pinned to the retained old generation.
+
+## Unsupported format migration
+
+Unmarked exports, arbitrary code trees, executable/symlink entries, and legacy shard layouts
+are rejected with conversion guidance, even with a reviewed epoch policy. This publisher
+supports verified **raw originals no larger than 95 MiB each**, not sharded Git publication.
+
+For an unsupported source, independently review the original bytes and provenance, ingest
+those originals, and explicitly publish into an **empty**, reviewed `isolock/vN` destination.
+Keep the old ref for its consumers. This is a manual verified-raw conversion boundary, not
+an automatic import, seal, or reinterpretation of the old layout. Use directory transport
+and the existing FileStore APIs where the Git original-size limit is unsuitable.
+
+The executable contracts use the real CLI and disposable local Git remotes, including
+concurrent writers, receiver failure after acceptance, successive epochs, cold consumers,
+and offline fixture runtimes. They never publish test data to actual artifact storage.

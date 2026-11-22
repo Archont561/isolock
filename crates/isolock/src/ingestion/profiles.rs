@@ -50,6 +50,7 @@ pub fn publish_profile(
         .as_deref()
         .ok_or("profile has no locked storage source")?;
     let mut publisher = Publisher::open(root, remote, reference)?;
+    super::epoch::review(&mut publisher, None, None)?;
     publisher.pinned_source(source, commit)?;
     let files = files(&snapshot, &snapshot)?;
     // Every original, including reviewed profile input files, must already exist

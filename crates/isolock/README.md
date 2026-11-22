@@ -20,8 +20,12 @@ selected local batch before importing originals into the configured CAS. Explici
 without modifying the producer checkout or index. Profile manifests publish separately
 with `push --profile NAME --platform PLATFORM`, against an earlier pinned payload commit.
 
-See [reviewed ingestion](../../docs/content/docs/ingestion.mdx) for the schema, retention
-policy, cold-consumer flow, and unsupported epoch/large-blob/registry-resolution boundaries.
+`push --epoch-policy FILE` adds explicit source-pinned live/history budgets and retention.
+Overflow atomically creates an orphan successor plus an unchanged-tree source seal, keeping
+old refs and locked profiles available. No configuration or storage identity is rewritten.
+See [reviewed ingestion](../../docs/content/docs/ingestion.mdx) and
+[storage epochs](../../docs/content/docs/storage-epochs.mdx) for review, retention, recovery,
+cold-consumer flows, and unsupported large-blob/format-conversion/registry-resolution boundaries.
 
 ## POSIX environment bootstrap
 

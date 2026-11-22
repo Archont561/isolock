@@ -21,14 +21,21 @@ We use an unparented Git orphan branch (`isolock/v1`) as a decentralized, versio
 
 - **Positive**: Zero external cloud storage dependencies; works with any standard Git hosting service.
 - **Positive**: Complete tamper-evident SHA-1 / SHA-256 audit trail via Git commit trees.
-- **Negative**: Branch size must be budgeted. Automated rollover to `isolock/v2` is the
-  intended follow-up, **not an implemented capability**.
+- **Negative**: Live paths and cumulative reachable blobs require different budgets.
+  Rollover needs reviewed retention and atomic-push support; retained archived refs mean
+  total remote disk usage is not globally bounded.
 
 ## Implementation status
 
-ISO-23 implements reviewed explicit publication with a private index and non-force remote
-push, preserving the producer checkout and linear storage audit trail. It rejects originals
-over 95 MiB and live trees over 1,500 MiB; that is not a cumulative-history bound. Automatic
-rollover and reviewed legacy/sharded snapshot migration remain ISO-24 (To Do). See
-[doc-3](../docs/doc-3%20-%20Git-orphan-branch-storage-and-epoch-rollover.md) for the implemented
-layout and deferred boundaries.
+ISO-23 implements reviewed explicit publication and a linear non-force storage audit.
+ISO-24 adds source-pinned `push --epoch-policy FILE`: full isolated history accounting,
+verified batch/profile retention, an orphan successor, and an unchanged-tree source seal
+published in one atomic non-force transaction. Producer code refs/index/checkout and
+configuration remain unchanged. Old refs and immutable profile identities/payload commits
+remain available; successor adoption requires explicit replanning.
+
+Originals over 95 MiB, over-budget retained closures, shallow storage histories, and
+unsupported unmarked/legacy-sharded/unsafe snapshots fail closed with conversion guidance.
+No non-atomic fallback or automatic format conversion is provided. See
+[doc-3](../docs/doc-3%20-%20Git-orphan-branch-storage-and-epoch-rollover.md) for budget
+semantics, recovery from uncertain acceptance, and the remaining storage boundaries.

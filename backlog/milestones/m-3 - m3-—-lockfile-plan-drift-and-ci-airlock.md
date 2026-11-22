@@ -17,7 +17,7 @@ Exit condition: legacy `isolock plan --ci` rejects missing expected plan/CAS art
 
 ## Status
 
-**Complete within this scope.** Drift evaluation (`ISO-8`) and dispatch command synthesis (`ISO-9`) are complete. ISO-23 supplies reviewed acquisition/publication; the PR workflow checks a published snapshot, not general lockfile discovery. Automatic epoch rollover remains ISO-24.
+**Complete within this scope.** Drift evaluation (`ISO-8`) and dispatch command synthesis (`ISO-9`) are complete. ISO-23 supplies reviewed acquisition/publication; the PR workflow checks a published snapshot, not general lockfile discovery. ISO-24 supplies separately reviewed epoch rollover; the dispatch workflow does not choose retention policy or adopt generations automatically.
 
 ## Tasks
 

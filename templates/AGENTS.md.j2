@@ -9,8 +9,8 @@ This document governs agent-assisted development in `isolock`.
 
 ## Core Invariants
 
-1. **Airlock Separation**: All dependencies must be resolvable offline through CAS blobs on `isolock/v1`.
-2. **Incremental Chores**: Ingest commits on `isolock/v1` are linear `chore(deps): add ...` commits with parent chaining.
+1. **Airlock Separation**: All dependencies must be resolvable offline through CAS blobs on a reviewed `isolock/vN` storage generation (default `isolock/v1`).
+2. **Incremental Chores**: Publication within an active epoch uses linear `chore(deps): add ...` commits. Reviewed rollover atomically creates an orphan successor and an unchanged-tree source seal; old refs and code history are never rewritten.
 3. **No Tracked Blobs on `main`**: Binary blobs (`.conda`, `.tar.bz2`, `.whl`, `.tgz`, `.crate`) must never be committed to `main`.
 4. **Behavior Contracts**: User-facing promises must have an accompanying BDD scenario in `features/*.feature` with `rstest-bdd` step bindings.
 5. **No Network in CI**: Tests must run hermetically with `--offline`.

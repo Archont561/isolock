@@ -113,8 +113,9 @@ Git authentication externally; do not embed credentials in a URL.
 
 The first commit creates an orphan storage history. Later commits parent the current
 remote storage tip, with audit subjects such as `chore(deps): add cargo/demo==1.0.0`.
-A private Git index preserves the producer's branch, HEAD, staged/unstaged changes, and
-untracked files. The publisher does not update a local code or storage branch.
+A disposable Git repository and private index preserve the producer's branch, HEAD,
+staged/unstaged changes, untracked files, and Git fetch/shallow state. Raw object hashing
+bypasses producer Git filters. The publisher does not update local code or storage refs.
 
 The snapshot is compatible with the existing raw-CAS, legacy-plan, and profile consumers:
 
@@ -126,6 +127,7 @@ ingestion/records/IDENTITY.json       # immutable artifact/provenance record
 ingestion/objects/BATCH_DIGEST.json   # immutable reviewed batch
 plans/objects/MANIFEST_DIGEST.json    # added by explicit profile publication
 plans/PROFILE-PLATFORM.lock           # reviewed profile alias
+epoch.json                           # reviewed policy/batch on an orphan successor
 ```
 
 Re-publishing the same tree is a no-op. A published identity cannot change its bytes,
@@ -134,8 +136,23 @@ reloads and parents the new tip. Publication never force-pushes or rewrites hist
 
 Existing destinations must have the reviewed-artifact marker and recognized regular-file
 snapshot paths. Unmarked exports, legacy sharded trees, arbitrary code trees, executable
-files, and symlinks are not adopted. Existing consumers/layouts remain usable;
-automatic storage migration is not implemented.
+files, and symlinks are not adopted. Re-ingest independently reviewed raw originals into
+an empty generation for a manual format conversion; use directory transport for originals
+that exceed Git publication limits.
+
+### Reviewed automatic rollover
+
+`push --epoch-policy epoch-policy.json` opts into reviewed live-tree and cumulative-history
+budgets, pinned to an exact source ref/commit and its immediate successor. If either budget
+would be exceeded, the publisher verifies the retained closure, creates an orphan successor,
+and atomically publishes it together with an unchanged-tree source seal. Old refs, profile
+identities, and locked payload commits are retained; configuration is never rewritten.
+Accepted retries verify remote evidence without requiring the producer CAS.
+
+See [reviewed storage epoch rollover](./storage-epochs.mdx) for the policy schema, mandatory
+profile/optional batch roots, history accounting, failure recovery, format boundaries,
+and explicit successor adoption. Ordinary publication without a policy keeps its existing
+live-tree limit and does not apply a cumulative-history policy automatically.
 
 ### Publish a locked profile in two phases
 
@@ -202,10 +219,12 @@ profile-specific `gc --root` is supplied. Their blobs join the durable shared-CA
 registration. A damaged, misnamed, or unsafe ingestion object stops GC. Automatic retirement of reviews or stale workspace registrations is not implemented.
 
 Git publication rejects originals over 95 MiB and live snapshot trees over 1,500 MiB.
-The latter is a **live-tree** budget, not a bound on all historical Git objects. The CAS
-sharding library does not imply sharded Git publication is available. Automatic epoch
-rollover, snapshot migration, direct registry resolution, selective Git/HTTP transport,
-and connected proxy-miss fetching remain follow-up work.
+Without an epoch policy, the latter is a **live-tree** limit, not a bound on historical
+Git objects. Reviewed rollover additionally budgets reachable blob history per active
+epoch, not total archived storage. The CAS sharding library does not imply sharded Git
+publication is available. Automatic conversion of legacy/sharded formats, direct registry
+resolution, selective Git/HTTP transport, and connected proxy-miss fetching remain follow-up
+work.
 
 The executable contracts use the real CLI, disposable Git remotes, and empty consumer
 CAS directories. Profile publication tests use fixture runtimes/archives; separate opt-in
