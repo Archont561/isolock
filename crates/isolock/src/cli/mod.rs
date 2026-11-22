@@ -1,6 +1,7 @@
 //! Declarative controllers own command authoring; one clifacet application runs them.
 
 mod configuration;
+mod ingestion;
 mod plan;
 mod profiles;
 mod proxy;
@@ -12,8 +13,9 @@ use clifacet::contract::ExitPolicy;
 use clifacet::policy::Policy;
 use clifacet::{App, Failure};
 use configuration::Config;
+use ingestion::{Ingest, Push};
 use profiles::{Export, Fetch, Gc, NoArguments, Plan, Sync};
-use proxy::{Exec, Ingest};
+use proxy::Exec;
 use std::cell::Cell;
 use std::io::Write;
 use std::path::Path;
@@ -101,6 +103,7 @@ impl Isolock {
             &self.overrides,
             Operation::Export {
                 output: options.output,
+                quiet: false,
             },
         )
     }
@@ -142,15 +145,31 @@ impl Isolock {
         Ok(())
     }
 
-    /// Legacy ingestion entrypoint.
-    #[expect(
-        clippy::unused_self,
-        reason = "declarative command methods require a receiver; the ingestion stub has no shared state"
-    )]
-    pub fn ingest(&self, #[clifacet(subcommand)] options: Ingest) -> String {
-        // Preserve the existing placeholder; implementing ingestion is a separate task.
-        let _ = (options.registry, options.packages);
-        "isolock ingest: airlock package ingested into local CAS store".into()
+    /// Publish verified reviewed artifacts to an isolated storage branch, without force.
+    pub fn push(&self, #[clifacet(subcommand)] options: Push) -> Result<String, String> {
+        crate::ingestion::publish(
+            &self.overrides,
+            &options.manifest,
+            &options.remote,
+            crate::ingestion::Selection {
+                registry: options.registry.as_deref(),
+                packages: &options.packages,
+            },
+        )
+    }
+
+    /// Verify and import explicitly reviewed originals into CAS.
+    pub fn ingest(&self, #[clifacet(subcommand)] options: Ingest) -> Result<String, String> {
+        crate::ingestion::ingest(
+            &self.overrides,
+            &options.manifest,
+            &options.artifacts,
+            crate::ingestion::Selection {
+                registry: options.registry.as_deref(),
+                packages: &options.packages,
+            },
+            options.download,
+        )
     }
 }
 

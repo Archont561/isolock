@@ -12,11 +12,12 @@ Isolock is a deterministic, content-addressable dependency airlock system design
 ## Quick Links
 
 - **[Getting Started](./getting-started.mdx)**: Install Isolock, plan lockfiles, and run in airlock mode.
+- **[Reviewed Ingestion](./ingestion.mdx)**: Verify pinned originals, publish explicitly, and restore offline.
 - **[Architecture Overview](./architecture.mdx)**: Learn about `isolock-core`, `isolock-cas`, `isolock-plan`, and `isolock-proxy`.
 
 ## Core Features
 
 - **Multi-Ecosystem Interception**: Transparent proxy routing for Conda, PyPI, npm, and Cargo.
-- **Fail-Closed Hermeticity**: Enforces zero external network leaks in CI and sealed workstations.
+- **Fail-Closed Package Paths**: Missing proxy artifacts fail closed; locked materializers do not resolve upstream. These are not OS/network sandboxes.
 - **Content-Addressable Storage (CAS)**: SHA-256 sharded storage engine caching verified upstream artifacts.
 - **Lockfile Drift Guard**: Detects tampered, missing, or mismatched package digests before deployment.

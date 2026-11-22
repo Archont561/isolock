@@ -4,12 +4,24 @@ Main executable binary CLI for the Isolock airlock manager.
 
 ## Responsibilities
 
-- Handles CLI dispatch for `exec`, `sync`, `plan`, `ingest`, and `serve`.
+- Handles CLI dispatch for `exec`, `sync`, `plan`, `ingest`, `push`, and `serve`.
 - Injects local proxy registry URLs for Cargo, Conda, PyPI, and NPM.
 
 ## Plan drift and dispatch commands
 
-`isolock plan` compares `.isolock/plan.json` (or the path in `ISOLOCK_PLAN`) with verified blobs in `.isolock/cas` (or `ISOLOCK_CAS_DIR`). It fails closed if no plan is available. When artifacts are missing, it prints one copyable `gh workflow run isolock.yml` command per registry; `--ci` also exits non-zero so CI can gate on the drift. The PR workflow skips this audit until the remote `isolock/v1` branch or tag exists; once initialized, the plan and CAS must also be provisioned for the audit to run successfully.
+`isolock plan` compares `.isolock/plan.json` (or the path in `ISOLOCK_PLAN`) with verified blobs in `.isolock/cas` (or `ISOLOCK_CAS_DIR`). It fails closed if no plan is available. When artifacts are missing, it prints one copyable `gh workflow run isolock.yml` command per registry; `--ci` also exits non-zero so CI can gate on the drift. Generated commands require a reviewed, committed `isolock.ingest.json` with exact source, filename, and SHA-256 pins. The PR workflow skips until a remote `isolock/v1` branch or tag exists, then verifies that published snapshot's plan/CAS in an isolated directory. It does not solve project lockfiles.
+
+## Reviewed ingestion and publication
+
+`isolock ingest --manifest isolock.ingest.json --artifacts originals` validates the whole
+selected local batch before importing originals into the configured CAS. Explicit
+`--download` acquires only reviewed HTTPS sources. Neither form publishes.
+`isolock push --manifest isolock.ingest.json` appends a non-force, linear storage commit
+without modifying the producer checkout or index. Profile manifests publish separately
+with `push --profile NAME --platform PLATFORM`, against an earlier pinned payload commit.
+
+See [reviewed ingestion](../../docs/content/docs/ingestion.mdx) for the schema, retention
+policy, cold-consumer flow, and unsupported epoch/large-blob/registry-resolution boundaries.
 
 ## POSIX environment bootstrap
 

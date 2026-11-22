@@ -21,4 +21,14 @@ We use an unparented Git orphan branch (`isolock/v1`) as a decentralized, versio
 
 - **Positive**: Zero external cloud storage dependencies; works with any standard Git hosting service.
 - **Positive**: Complete tamper-evident SHA-1 / SHA-256 audit trail via Git commit trees.
-- **Negative**: Branch size must be budgeted; resolved via automated rollover to `isolock/v2` at 1,500 MiB.
+- **Negative**: Branch size must be budgeted. Automated rollover to `isolock/v2` is the
+  intended follow-up, **not an implemented capability**.
+
+## Implementation status
+
+ISO-23 implements reviewed explicit publication with a private index and non-force remote
+push, preserving the producer checkout and linear storage audit trail. It rejects originals
+over 95 MiB and live trees over 1,500 MiB; that is not a cumulative-history bound. Automatic
+rollover and reviewed legacy/sharded snapshot migration remain ISO-24 (To Do). See
+[doc-3](../docs/doc-3%20-%20Git-orphan-branch-storage-and-epoch-rollover.md) for the implemented
+layout and deferred boundaries.

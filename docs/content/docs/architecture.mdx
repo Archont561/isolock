@@ -18,9 +18,9 @@ crates/
 
 ## Security Invariants
 
-1. **Zero Network Leakage**: In `Ci` and `LocalAirlock` operational modes, un-cached dependency requests result in an immediate fail-closed airlock violation.
+1. **No Upstream Proxy Fallback**: In `Ci` and `LocalAirlock` modes, uncached proxy requests fail closed. Proxy configuration is not an OS/network sandbox for arbitrary child programs.
 2. **Deterministic Digests**: Every artifact stored in CAS is verified against lowercase 64-hex SHA-256 hashes.
-3. **Drift Immunity**: Plan verification compares expected against current lockfiles to prevent stealth dependency tampering.
+3. **Locked Input Verification**: Profile checks compare reviewed configuration and input digests. Legacy plan checks compare an expected JSON plan against local CAS bytes; they do not resolve project dependencies.
 
 ## Command-line boundary
 
@@ -43,6 +43,20 @@ requests exit successfully before loading configuration or creating application 
 A small output adapter preserves a completed child's exact exit status without adding
 output or overriding a clifacet runner failure.
 
+## Reviewed ingestion and storage publication
+
+The declarative `ingest` and `push` groups use the same CLI/configuration boundary.
+Manifest validation, local/explicit-connected staging, publication assembly, and isolated
+Git plumbing have separate modules. Original bytes enter the configured CAS only after
+selected-batch validation. Immutable ingestion objects also register conservative shared-CAS
+GC roots.
+
+Publication appends a non-force `chore(deps)` storage commit using a private index, without
+checking out storage or staging producer files. Profile publication reuses the verified
+export and checks originals against the earlier locked payload commit. Live-tree limits
+fail closed; automatic epoch rollover and registry solving are not implemented. See
+[reviewed ingestion and publication](./ingestion.mdx) for the exact schema and boundaries.
+
 ## Execution and proxy ownership
 
 The CLI resolves configuration once at its Figment boundary. `proxy_cli` owns proxy
@@ -53,4 +67,4 @@ Core planning, CAS, and proxy crates never read operational process configuratio
 `default_adapters` owns registry composition, while the server owns loopback admission and
 routing. Separate request, response, and resource modules implement HTTP parsing, closed
 response classification/transforms, absolute socket deadlines, and bounded worker accounting.
-See [proxy execution and limits](./proxy) and the [Rust quality policy](./quality).
+See [proxy execution and limits](./proxy.mdx) and the [Rust quality policy](./quality.mdx).

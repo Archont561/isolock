@@ -44,6 +44,10 @@ Generate and check dependency airlock plans:
 isolock plan --ci
 ```
 
+Without a profile/project configuration this checks an existing legacy `.isolock/plan.json`
+against the local CAS; it does not discover project dependencies. Use explicit
+`--profile NAME --platform PLATFORM` planning for the [locked profile workflow](./profiles.mdx).
+
 ### 2. Start the Local Hermetic Proxy
 
 Run the proxy listener in sealed airlock mode:
@@ -54,11 +58,17 @@ isolock serve
 
 ### 3. Ingest Verified Artifacts
 
-Ingest upstream dependency archives into the local CAS:
+Review `isolock.ingest.json` with exact names, versions, HTTPS sources, filenames, and
+SHA-256 pins, then verify the matching local originals. Publication is a separate action:
 
 ```sh
-isolock ingest
+isolock ingest --manifest isolock.ingest.json --artifacts originals
+isolock push --manifest isolock.ingest.json
 ```
+
+Neither command resolves a registry. Local ingestion never downloads; the connected workflow
+can explicitly use `--download` for reviewed sources. See [reviewed ingestion and publication](./ingestion.mdx)
+for the JSON schema, storage limits, two-phase profile publication, and cold-consumer restore.
 
 ### 4. Bootstrap and Activate a Toolchain
 

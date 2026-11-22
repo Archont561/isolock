@@ -28,6 +28,7 @@ pub enum Operation {
     },
     Export {
         output: PathBuf,
+        quiet: bool,
     },
     SeedManifest {},
     Gc {
@@ -125,14 +126,16 @@ fn execute(
                 },
             )?;
         }
-        Operation::Export { output } => {
+        Operation::Export { output, quiet } => {
             let manifests = locked_graph(workspace, settings, profile, platform)?;
             transport::export(
                 workspace,
                 &manifests,
                 &config::absolute(&workspace.root, &output),
             )?;
-            println!("Exported selected profile {profile}/{platform}");
+            if !quiet {
+                println!("Exported selected profile {profile}/{platform}");
+            }
         }
         Operation::SeedManifest {} => seed_manifest(workspace, settings, profile, platform)?,
         Operation::Config { .. } | Operation::Gc { .. } => {

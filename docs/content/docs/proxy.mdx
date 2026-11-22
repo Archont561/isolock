@@ -8,7 +8,7 @@ description: Configure bounded loopback requests and scoped package-manager exec
 The loopback proxy consumes a legacy JSON `AirlockPlan`, not a profile manifest. A missing
 **default** `.isolock/plan.json` means an empty snapshot for `serve` and `exec`; an explicitly
 configured missing plan fails closed. `isolock plan --ci` still requires an expected plan.
-For profile planning and offline materialization, use the [profile guide](./profiles).
+For profile planning and offline materialization, use the [profile guide](./profiles.mdx).
 
 ```sh
 isolock serve --port 0 --max-concurrency 16
@@ -21,6 +21,22 @@ is passed through, including flags such as `--version`, `--help`, and `--config`
 empty arguments, and spaces. Configure Isolock through `isolock.toml`, environment overrides,
 or global flags before the child command, for example `isolock --port 0 exec -- npm test`.
 A normal child exit code is preserved; on Unix a signal maps to `128 + signal`.
+
+## Consume a reviewed published snapshot
+
+`isolock push --manifest isolock.ingest.json` publishes a metadata-preserving `plan.json`
+and its raw originals under `cas/sha256`. Obtain that storage snapshot separately from the
+code checkout, then point the legacy commands at it:
+
+```sh
+ISOLOCK_PLAN=/srv/isolock-snapshot/plan.json \
+ISOLOCK_CAS_DIR=/srv/isolock-snapshot/cas isolock exec cargo build --locked --offline
+```
+
+The publisher preserves existing plan entries and refuses conflicting package identities.
+It does not make connected proxy misses resolve upstream: those still fail as described
+below. See [reviewed ingestion and publication](./ingestion.mdx) for acquisition, Git layout,
+explicit storage publication, and current size/epoch limits.
 
 ## Typed operational configuration
 
@@ -72,7 +88,7 @@ when concurrency and all three deadlines change.
 
 ## Admission and shutdown policy
 
-- At most `max-concurrency` request workers run per listener. There is no application
+- At most `max-concurrency` request workers run per listener. The listener has no application
   request queue and no worker is created for an overloaded connection. The OS TCP backlog
   remains bounded by the operating system.
 - Overload returns HTTP **503 Service Unavailable** without consulting adapters or upstream.

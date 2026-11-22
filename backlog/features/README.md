@@ -1,11 +1,13 @@
 # Gherkin Feature Specifications
 
-Executable Gherkin specifications (`.feature`) defining the behavioral contracts for Isolock. These contracts govern the implementation of capabilities inside the Rust workspace crates:
+Gherkin specifications (`.feature`) define Isolock behavior. Most are executable contracts;
+explicitly tagged deferred specifications are not evidence of implemented capabilities:
 
 | Specification File | Capability | Target Crate |
 | :--- | :--- | :--- |
 | `cas-sharding.feature` | CAS Storage & Large Blob Sharding (>95M) | `crates/isolock-cas` |
-| `git-orphan-branch.feature` | Git Orphan Branch & Rollover | `crates/isolock-cas` |
+| `reviewed-ingestion.feature` | Verified ingestion, explicit Git publication, cold consumers, workflow safety, and GC roots | `crates/isolock` (CLI) |
+| `git-orphan-branch.feature` | **Deferred:** automatic epoch rollover (ISO-24), not an executed test | Future CLI/storage work |
 | `proxy-pypi.feature` | PyPI PEP 503 Simple Index Proxy | `crates/isolock-proxy` |
 | `proxy-conda.feature` | Conda Repodata Channel Proxy | `crates/isolock-proxy` |
 | `proxy-npm.feature` | NPM Registry Packument Proxy | `crates/isolock-proxy` |
@@ -24,3 +26,8 @@ The profile contracts are executable in `crates/isolock/tests/profile_bdd.rs` an
 standalone capabilities, manifest-first transfer, shared-CAS GC, seed archives, and
 credential-free diagnostics. `real_profile.rs` is exercised separately by the explicit
 CI profile/platform matrix using restored tools and no registry downloads.
+
+Reviewed ingestion/publication binds to `crates/isolock/tests/reviewed_ingestion.rs` and
+`ingestion_profiles.rs`. The latter publishes reviewed payloads, locks a profile to that
+commit, publishes its manifest, and exercises a cold offline consumer with fixture tools.
+It does not claim native publication across every platform or implement epoch rollover.

@@ -20,17 +20,19 @@ Feature: Clifacet application routing
     And no application state is created
 
     Examples:
-      | arguments                 | diagnostic              |
-      | plan --unknown            | unexpected argument     |
-      | serve --unknown           | unexpected argument     |
-      | config                    | Usage: isolock config   |
-      | config unknown-command    | unrecognized subcommand |
-      | config explain            | <PATH>                  |
-      | exec                      | <COMMAND>               |
-      | exec --                   | <COMMAND>               |
-      | export                    | --output                |
-      | ingest --registry invalid | invalid value           |
-      | --config                  | a value is required     |
+      | arguments                               | diagnostic              |
+      | plan --unknown                          | unexpected argument     |
+      | serve --unknown                         | unexpected argument     |
+      | config                                  | Usage: isolock config   |
+      | config unknown-command                  | unrecognized subcommand |
+      | config explain                          | <PATH>                  |
+      | exec                                    | <COMMAND>               |
+      | exec --                                 | <COMMAND>               |
+      | export                                  | --output                |
+      | ingest --registry invalid               | invalid value           |
+      | push --registry invalid                 | invalid value           |
+      | ingest --download --artifacts originals | cannot be used with     |
+      | --config                                | a value is required     |
 
   Scenario Outline: Help does not initialize the application
     Given an isolated CLI workspace
@@ -55,6 +57,7 @@ Feature: Clifacet application routing
       | seed-manifest --help  |
       | gc --help             |
       | ingest --help         |
+      | push --help           |
 
   Scenario Outline: Child arguments are opaque to the application parser
     Given an isolated CLI workspace
@@ -93,10 +96,10 @@ Feature: Clifacet application routing
       | config --port 8123 explain proxy.port |
       | config explain proxy.port --port 8123 |
 
-  Scenario: Legacy ingestion keeps its workflow arguments
+  Scenario: Ingestion requires reviewed pins instead of placeholder success
     Given an isolated CLI workspace
     When CLI arguments "ingest --registry cargo demo==1.0.0" are requested
-    Then the legacy ingestion entrypoint succeeds
+    Then ingestion reports that the reviewed manifest is missing
     And no application state is created
 
   Scenario: Version does not initialize the application

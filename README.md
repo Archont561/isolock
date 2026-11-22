@@ -9,11 +9,11 @@
 
 Build and test software hermetically without internet access or container daemons: resolve dependencies once, commit immutable artifacts to a Git orphan branch, and intercept native package managers through an ephemeral loopback proxy. Restore and activate full execution environments with a single pure POSIX shell script.
 
-> Status: active development `0.1.0`. M5 provides locked profile planning and offline materialization. M6 adds scoped CLI sessions, extensible registry composition, bounded proxy workers, and selected strict Clippy gates. See the [profile guide](docs/content/docs/profiles.mdx), [proxy limits](docs/content/docs/proxy.mdx), and [quality policy](docs/content/docs/quality.mdx) for supported behavior and explicit boundaries.
+> Status: active development `0.1.0`. M5 provides locked profile planning and offline materialization. M6 adds scoped CLI sessions, extendable registry composition, bounded proxy workers, and selected strict Clippy gates. Reviewed ingestion and explicit linear storage publication are available; automatic epoch rollover and registry resolution are not. See [ingestion](docs/content/docs/ingestion.mdx), the [profile guide](docs/content/docs/profiles.mdx), [proxy limits](docs/content/docs/proxy.mdx), and [quality policy](docs/content/docs/quality.mdx) for supported behavior and explicit boundaries.
 
 | Crate / Tool | What it is | Description |
 | :-- | :-- | :-- |
-| [`isolock`](crates/isolock) | Main CLI binary | User-facing commands: `config`, `plan`, `fetch`, `sync`/`bootstrap`, `export`, `seed-manifest`, `gc`, `exec`, `serve` |
+| [`isolock`](crates/isolock) | Main CLI binary | User-facing commands: `ingest`, `push`, `config`, `plan`, `fetch`, `sync`/`bootstrap`, `export`, `seed-manifest`, `gc`, `exec`, `serve` |
 | [`isolock-core`](crates/isolock-core) | Core domain types | Operational modes (`Connected`, `Ci`, `LocalAirlock`), Registry enum, and Semver validation |
 | [`isolock-cas`](crates/isolock-cas) | Content-Addressed Storage | SHA-256 digest addressability, large blob sharding (>95 MiB), and POSIX `cat` reassembly |
 | [`isolock-plan`](crates/isolock-plan) | Airlock plan engine | Lockfile plan diffing, immutable artifact manifest, and CI drift detection |
@@ -21,8 +21,10 @@ Build and test software hermetically without internet access or container daemon
 
 ## Quickstart
 
-After preparing reviewed `isolock.toml` profile intent and original artifacts as described
-in the [profile guide](docs/content/docs/profiles.mdx):
+Prepare reviewed `isolock.toml` profile intent and original artifacts as described in the
+[profile guide](docs/content/docs/profiles.mdx). Populate the CAS with
+`isolock ingest --manifest isolock.ingest.json --artifacts originals`;
+[publication](docs/content/docs/ingestion.mdx) is a separate explicit step. Then:
 
 ```sh
 isolock config check

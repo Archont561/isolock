@@ -48,7 +48,7 @@ pub(super) fn run(ci: bool, overrides: &config::Overrides) -> Result<String, Fai
                 }
             }
             if !commands.is_empty() {
-                report.push_str("Dispatch commands:\n");
+                report.push_str("Review and commit isolock.ingest.json with exact source, filename, and SHA-256 pins before dispatch. No registry resolution is performed.\nDispatch commands:\n");
                 for command in commands {
                     let _ = writeln!(report, "{command}");
                 }

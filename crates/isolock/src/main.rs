@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod execution;
+mod ingestion;
 mod materialize;
 mod profile_cli;
 mod profile_store;

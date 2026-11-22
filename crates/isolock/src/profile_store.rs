@@ -259,7 +259,7 @@ pub fn refresh_roots(
     roots: &[String],
 ) -> Result<(Vec<String>, BTreeSet<String>), String> {
     let selected = root_selection(workspace, roots)?;
-    let mut retained = BTreeSet::new();
+    let (mut ingestion_roots, mut retained) = crate::ingestion::roots(&workspace.root)?;
     for path in selected.values() {
         let bytes =
             fs::read(path).map_err(|_| "GC root is missing; refusing collection".to_owned())?;
@@ -287,7 +287,9 @@ pub fn refresh_roots(
             }
         }
     }
-    let roots = selected.into_keys().collect::<Vec<_>>();
+    ingestion_roots.extend(selected.into_keys());
+    ingestion_roots.sort();
+    let roots = ingestion_roots;
     if !roots.is_empty() || !retained.is_empty() {
         let key = isolock_plan::profile::canonical_digest(&workspace.root)?;
         let registration = RegisteredRoots {
@@ -317,7 +319,9 @@ pub fn garbage_collect(
     let _lease = StoreLease::acquire(workspace)?;
     let (roots, mut retained) = refresh_roots(workspace, roots)?;
     if roots.is_empty() && retained.is_empty() {
-        return Err("GC requires at least one explicit or discovered manifest root".into());
+        return Err(
+            "GC requires at least one explicit or discovered manifest or ingestion root".into(),
+        );
     }
     // Other registered workspaces are independent roots, not collateral garbage.
     let registrations = workspace.cas.root().join(".isolock-roots");

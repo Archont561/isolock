@@ -163,15 +163,14 @@ fn nested_overrides(world: &CliWorld) {
     );
 }
 
-#[then("the legacy ingestion entrypoint succeeds")]
+#[then("ingestion reports that the reviewed manifest is missing")]
 fn ingestion(world: &CliWorld) {
     let output = world.output.borrow();
     let output = output.as_ref().unwrap();
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
-    assert_eq!(
-        output.stdout,
-        b"isolock ingest: airlock package ingested into local CAS store\n"
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cannot read reviewed ingestion manifest")
     );
 }
 
@@ -251,9 +250,9 @@ fn globals_reach_nested_commands(world: CliWorld, arguments: String) {
 
 #[scenario(
     path = "../../backlog/features/clifacet-routing.feature",
-    name = "Legacy ingestion keeps its workflow arguments"
+    name = "Ingestion requires reviewed pins instead of placeholder success"
 )]
-fn legacy_ingestion_arguments(world: CliWorld) {
+fn ingestion_requires_a_review(world: CliWorld) {
     let _ = world;
 }
 

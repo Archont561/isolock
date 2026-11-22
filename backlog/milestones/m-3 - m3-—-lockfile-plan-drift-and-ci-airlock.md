@@ -5,9 +5,9 @@ title: "M3 - Lockfile plan drift and CI airlock"
 
 ## Description
 
-Provide multi-lockfile drift auditing, read-only CI fail-closed gates, and automated dispatch ingestion command generation.
+Provide expected-plan/CAS drift auditing, read-only fail-closed checks, and reviewed-manifest dispatch command generation. Profile-scoped lockfile parsing/checking is delivered separately by M5.
 
-Exit condition: `isolock plan --ci` detects lockfile tampering or missing dependencies and emits actionable ingestion commands.
+Exit condition: legacy `isolock plan --ci` rejects missing expected plan/CAS artifacts and emits actionable dispatch guidance. It does not discover or solve arbitrary project dependencies.
 
 ## Exit criteria
 
@@ -17,7 +17,7 @@ Exit condition: `isolock plan --ci` detects lockfile tampering or missing depend
 
 ## Status
 
-**Complete**. Drift evaluation (`ISO-8`) and workflow dispatch command synthesis (`ISO-9`) are complete.
+**Complete within this scope.** Drift evaluation (`ISO-8`) and dispatch command synthesis (`ISO-9`) are complete. ISO-23 supplies reviewed acquisition/publication; the PR workflow checks a published snapshot, not general lockfile discovery. Automatic epoch rollover remains ISO-24.
 
 ## Tasks
 

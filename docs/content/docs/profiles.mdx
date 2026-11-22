@@ -133,7 +133,7 @@ path components and single underscores for hyphens; for example
 `ISOLOCK_CONFIG_STORAGE__CAS_DIR`. Equivalent flags include `--cas-dir`,
 `--storage-ref`, `--pixi-environment`, and `--pixi-version`.
 
-The schema denies unknown fields and unsupported versions. There are **no inline secret
+The schema denies unknown fields and unsupported versions. The schema has **no inline secret
 fields**: credential-bearing URLs, signed query parameters, and userinfo are rejected.
 Invalid provider values/TOML are not echoed into diagnostics. Valid configuration
 rendering has no credential values to expose; use external package-manager credential
@@ -166,10 +166,12 @@ artifacts. `sync` always consumes a reviewed lock, even without the documentary
 It does not silently accept a system Pixi, Isolock, or runtime from PATH.
 
 The filesystem CAS stores raw originals at `CAS/sha256/aa/bb/FULL_DIGEST`, with verified,
-streaming, no-clobber publication. To initially populate it, copy reviewed originals to
-those paths (or use the `isolock_cas::FileStore` API). A cache hit is verified; corrupt
-bytes are an error, not an excuse to fetch or replace them. This is distinct from the
-legacy filename/shard environment layout.
+streaming, no-clobber publication. Populate it with
+`isolock ingest --manifest isolock.ingest.json --artifacts originals`; the
+[reviewed ingestion guide](./ingestion.mdx) defines the pins, explicit connected acquisition,
+and publication contract. A cache hit is verified; corrupt bytes are an error, not an
+excuse to fetch or replace them. This is distinct from the legacy filename/shard
+environment layout.
 
 `export --profile NAME --platform PLATFORM --output DIRECTORY` writes a portable
 snapshot with `plans/objects`, plan aliases, and `cas/sha256`. Directory transport fetches
@@ -177,14 +179,29 @@ the selected manifest graph **before** copying only its reachable missing blobs.
 consumer can select a reviewed digest with `fetch --manifest DIGEST` or
 `sync --manifest DIGEST`; local configuration/lockfiles must still match.
 
-For Git, configure `storage.transport = "git"` and a public/local `storage.source`.
-Planning pins `storage.reference` to a commit containing payloads. Publish the exported
-manifest objects in a subsequent storage commit: restores read manifests from the named
-ref but payloads exclusively from the locked commit. The fallback explicitly warns that
-shallow fetching transfers a **broader snapshot**, not a blob-selective Git transfer.
-This command does not publish commits or bypass the linear `isolock/v1` ingestion policy.
-Git host file-size limits still apply; use directory transport for large unsharded
-originals. There is no automatic conversion of legacy sharded storage snapshots.
+For Git, configure `storage.transport = "git"` and a public/local `storage.source` matching
+the publication destination. Publish payloads **before** planning, including reviewed
+originals for every byte-pinned profile input (lockfiles/catalogs/manifests recorded in
+`inputs`). Use `generic` ingestion records for these files and for seed/runtime originals.
+
+```sh
+isolock ingest --manifest isolock.ingest.json --artifacts originals
+isolock push --manifest isolock.ingest.json
+isolock plan --profile rust-pixi --platform linux-64
+isolock push --profile rust-pixi --platform linux-64
+```
+
+Planning pins `storage.reference` to the payload commit. The subsequent profile publication
+requires that all exported original bytes already exist in that commit; it cannot repair
+locked history or publish to a different source. Restores read manifests from the named ref
+but payloads exclusively from the locked commit. The fallback explicitly warns that shallow
+fetching transfers a **broader snapshot**, not a blob-selective Git transfer.
+
+`export` itself remains local. `push` is an explicit, non-force, linear storage publication,
+with a reviewed-artifact marker required on an existing destination. Originals over 95 MiB,
+live trees over 1,500 MiB, and automatic epoch rollover are not supported by this publisher.
+Directory transport and the existing FileStore API remain available for large originals.
+Automatic conversion of legacy sharded storage snapshots is not implemented.
 
 ## Bootstrap without a package-manager environment
 
@@ -260,8 +277,10 @@ isolock gc --apply                  # explicit deletion
 ```
 
 `gc.roots = ["rust-pixi-linux-64"]` selects reviewed plan aliases. With no configured
-roots, all local aliases are roots. Active receipt manifests are always retained. All
-workspace registrations in a shared CAS are additional durable roots, so collecting one
+roots, all local aliases are roots. Active receipt manifests and validated ingestion
+objects are always retained, including ingested originals not yet published or selected by
+a profile. Damaged ingestion roots stop collection. All workspace registrations in a shared
+CAS are additional durable roots, so collecting one
 workspace cannot delete another workspace's bytes. Missing/corrupt roots or noncanonical
 CAS paths stop collection. Stale workspace registrations retain bytes conservatively;
 there is intentionally no automatic forgetting of a disappeared workspace. Plan/sync/fetch

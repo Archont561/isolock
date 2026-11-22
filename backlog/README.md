@@ -16,14 +16,15 @@ backlog/
 │   ├── m-3 - m3-—-lockfile-plan-drift-and-ci-airlock.md
 │   ├── m-4 - m4-—-cli-execution-and-environment-bootstrap.md
 │   ├── m-5 - m5-—-profiled-environment-materialization-and-configuration.md
-│   └── m-6 - m6-—-code-quality-and-proxy-resilience.md
+│   ├── m-6 - m6-—-code-quality-and-proxy-resilience.md
+│   └── m-7 - m7-—-reviewed-ingestion-and-storage-publication.md
 ├── tasks/                     # Task files tracking work items
-│   └── iso-1 through iso-22
+│   └── iso-1 through iso-24
 ├── docs/                      # Architectural documentation
 │   └── doc-1 through doc-9
 ├── decisions/                 # Architecture Decision Records (ADRs)
 │   └── decision-1 through decision-7
-└── features/                  # Executable Gherkin specification contracts (.feature)
+└── features/                  # Executed contracts and tagged deferred specifications
 ```
 
 ---
@@ -39,6 +40,15 @@ backlog/
 | **m-4** | CLI Execution and Environment Bootstrap | `ISO-10`, `ISO-11` | Complete |
 | **m-5** | Profiled Environment Materialization and Configuration | `ISO-13` through `ISO-18` | Complete |
 | **m-6** | Code Quality and Proxy Resilience | `ISO-19` through `ISO-22` | Complete |
+| **m-7** | Reviewed Ingestion and Storage Publication | `ISO-23`, `ISO-24` | In progress: ingestion delivered; rollover To Do |
+
+Milestone completion refers to its scoped tasks, not every architectural aspiration.
+ISO-23 implements reviewed local/explicit-connected ingestion, linear publication,
+conservative GC roots, and a cold offline consumer. **Automatic epoch rollover is not
+implemented**; ISO-24 tracks it and reviewed snapshot migration. Direct registry solving,
+selective Git/HTTP transport, connected proxy-miss fetching, and broader native publication
+coverage remain later work. The PR guard verifies published snapshot completeness rather
+than discovering dependencies from arbitrary project lockfiles.
 
 ---
 
@@ -71,7 +81,8 @@ backlog/
 ## 5. Feature Specifications (`features/`)
 
 - **[CAS Sharding](features/cas-sharding.feature)**
-- **[Git Orphan Branch Storage](features/git-orphan-branch.feature)**
+- **[Reviewed Ingestion and Publication](features/reviewed-ingestion.feature)**
+- **[Deferred Epoch Rollover Specification](features/git-orphan-branch.feature)**
 - **[Proxy: PyPI](features/proxy-pypi.feature)**
 - **[Proxy: Conda](features/proxy-conda.feature)**
 - **[Proxy: NPM](features/proxy-npm.feature)**
