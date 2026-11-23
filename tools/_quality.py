@@ -85,9 +85,10 @@ def all_suites(_: argparse.Namespace) -> None:
         command(argparse.Namespace())
 
 
-def _run_profile_tests(names: list[str]) -> None:
+def _run_profile_tests(profile: str, names: list[str]) -> None:
     env = merged_env(
         {
+            "ISOLOCK_TEST_PROFILE": profile,
             "ISOLOCK_TEST_PLATFORM": os.environ.get("ISOLOCK_TEST_PLATFORM", "linux-64"),
             "ISOLOCK_TEST_PIXI": str(REPO / ".pixi/tools/linux-64/pixi"),
             "ISOLOCK_TEST_RUST_PREFIX": str(REPO / ".pixi/envs/default"),
@@ -117,7 +118,7 @@ def profile_materialize(_: argparse.Namespace) -> None:
     selected = os.environ.get("ISOLOCK_TEST_PROFILE")
     if selected not in PROFILE_JOURNEYS:
         raise SystemExit(f"unsupported ISOLOCK_TEST_PROFILE: {selected!r}")
-    _run_profile_tests(PROFILE_JOURNEYS[selected])
+    _run_profile_tests(selected, PROFILE_JOURNEYS[selected])
 
 
 def profile_journeys(args: argparse.Namespace) -> None:
@@ -126,7 +127,7 @@ def profile_journeys(args: argparse.Namespace) -> None:
     for profile in profiles:
         if profile not in PROFILE_JOURNEYS:
             raise SystemExit(f"unsupported profile: {profile!r}")
-        _run_profile_tests(PROFILE_JOURNEYS[profile])
+        _run_profile_tests(profile, PROFILE_JOURNEYS[profile])
 
 
 def build_cli(_: argparse.Namespace) -> None:
