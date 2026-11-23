@@ -24,7 +24,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-acceptance:
+    name: Required release acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Restore reviewed developer tooling
+        run: bash scripts/restore.sh
+      - name: Check formatting and lint
+        run: |
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo fmt --check
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo clippy --workspace --all-targets --offline -- -D warnings
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo deny --offline check bans licenses sources
+      - name: Run unit, BDD, property, and CLI/storage acceptance
+        run: |
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo nextest run --workspace --offline
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --workspace --offline
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo nextest run --package isolock --test cli_test --test epoch_rollover --test ingestion_profiles --offline
+      - name: Exercise offline locked-profile journeys
+        shell: bash
+        env:
+          ISOLOCK_TEST_PLATFORM: linux-64
+          ISOLOCK_TEST_PIXI: ${{ github.workspace }}/.pixi/tools/linux-64/pixi
+          ISOLOCK_TEST_RUST_PREFIX: ${{ github.workspace }}/.pixi/envs/default
+        run: |
+          set -euo pipefail
+          export ISOLOCK_TEST_PROFILE=rust-pixi
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline real_pixi_restores_the_selected_profile_from_a_cold_offline_cache -- --ignored --nocapture
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline real_pixi_conda_profile_roundtrips_through_git_storage_and_installs_offline -- --ignored --nocapture
+          export ISOLOCK_TEST_PROFILE=rust-standalone
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline real_standalone_rust_builds_a_locked_registry_dependency_offline -- --ignored --nocapture
+
   build:
+    needs: release-acceptance
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -78,7 +114,8 @@ jobs:
         uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
         with:
           pixi-version: latest
-          cache: true
+          run-install: false
+          cache: false
 
       - name: Install rattler-build
         run: pixi global install rattler-build
@@ -197,7 +234,8 @@ jobs:
         uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
         with:
           pixi-version: latest
-          cache: true
+          run-install: false
+          cache: false
 
       - name: Install rattler-build
         run: pixi global install rattler-build

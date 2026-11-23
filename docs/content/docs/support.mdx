@@ -22,6 +22,38 @@ parse commands, validate default configuration, and check an empty legacy plan o
 host. The Conda recipe test checks package installation and CLI startup. These checks do
 not assert native profile materialization on macOS or Windows.
 
+## Host and toolchain requirements
+
+- **Standalone CLI:** no Rust or Pixi installation is required to run the CLI itself.
+  Source builds require Rust 1.88 or newer (the workspace MSRV). The Windows artifact is
+  the x86_64 MSVC executable; Linux support is the x86_64 GNU build, and macOS support is
+  arm64.
+- **Conda CLI package:** install through a Conda-compatible package manager from the
+  `archont561/archont561` Prefix.dev channel. Rust is a build-time requirement, not a
+  runtime dependency of the installed CLI.
+- **Git storage:** use a Git executable and a configured local path, remote name, or
+  credential-free HTTPS source; Git authentication is external to Isolock. Explicit
+  connected ingestion requires `curl` and HTTPS access to the already-reviewed source.
+- **Profile workflows:** require the reviewed lock/manifests, artifact closure, and declared
+  seed/runtime tools. The tested Rust profiles require a Linux x86_64 GNU host and the
+  `linux-64` platform. Runtime prefixes must be relocatable and compatible with the host
+  distribution's libc/linker. Shell bootstrap requires a POSIX `sh` and a SHA-256 utility
+  (`sha256sum` or `shasum`).
+
+## Known exclusions
+
+Isolock does not resolve registry versions, discover transitive dependencies, or provide a
+host-network firewall. The proxy acceptance suite verifies the supported HTTP protocol
+routes with the CLI and deterministic local fixtures; it does not claim that pip, Pixi,
+Conda, npm, or Cargo package-manager transactions have been exercised end to end. Offline
+profile materialization is not claimed for macOS or Windows. Git transport may transfer a
+broader snapshot before retaining only the selected closure in the local CAS. Automatic
+legacy/sharded storage migration, old-epoch deletion, and connected proxy-miss acquisition
+are not part of this release contract.
+
+Follow the [release validation checklist](./release-checklist.mdx) for candidate evidence,
+non-publishing rehearsal, and the explicit GO/NO-GO process.
+
 ## Workflow and trust boundaries
 
 The 0.1 contract uses exact, reviewed inputs. Isolock does not select versions or solve
