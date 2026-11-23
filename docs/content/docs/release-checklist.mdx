@@ -21,9 +21,10 @@ candidate.
   coverage, CLI/profile/storage acceptance, both Linux profile jobs, and native standalone
   release-artifact smoke jobs for Linux x86_64, macOS arm64, and Windows x86_64.
 - [ ] The **Release & Publish** workflow is dispatched on that candidate with
-  `publish=false`. Its Linux/macOS/Windows binary and Conda-package builds succeed, release
-  archive checksums verify, extracted binaries pass the smoke test, and both publication
-  jobs are skipped.
+  `publish=false`. Its Linux/macOS/Windows binary and Conda-package builds succeed, native
+  archive checksums and extracted-binary smoke tests pass, Conda artifact checksums and
+  archive integrity verify, a combined candidate asset bundle is produced, and both
+  publication jobs are skipped.
 - [ ] Review the workflow run and its job summaries; confirm the candidate SHA matches the
   one selected above and that no release tag was pushed during rehearsal.
 - [ ] A maintainer records an explicit GO/NO-GO decision, date, candidate SHA, and links to
@@ -42,7 +43,7 @@ one.
 
 | Candidate SHA | CI run | Non-publishing release run | Decision / date |
 | --- | --- | --- | --- |
-| Pending merge and candidate selection | [CI](https://github.com/Archont561/isolock/actions/workflows/ci.yml) | [Release & Publish](https://github.com/Archont561/isolock/actions/workflows/release.yml) | **HOLD — no release authorized** |
+| `416239cc34bdff000ee00212c927375c4ac7a8f9` (PR #20; not merged) | [all required checks passed](https://github.com/Archont561/isolock/actions/runs/45196395631) | [all builds and smoke tests passed; both publish jobs skipped](https://github.com/Archont561/isolock/actions/runs/45196394309) | **HOLD — repeat against the final merged `main` SHA and record maintainer GO/NO-GO** |
 
 ## Post-release verification
 
