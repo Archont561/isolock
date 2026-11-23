@@ -17,7 +17,8 @@ backlog/
 │   ├── m-4 - m4-—-cli-execution-and-environment-bootstrap.md
 │   ├── m-5 - m5-—-profiled-environment-materialization-and-configuration.md
 │   ├── m-6 - m6-—-code-quality-and-proxy-resilience.md
-│   └── m-7 - m7-—-reviewed-ingestion-and-storage-publication.md
+│   ├── m-7 - m7-—-reviewed-ingestion-and-storage-publication.md
+│   └── m-8 - m8-—-0.1-release-validation-and-product-acceptance.md
 ├── tasks/                     # Task files tracking work items
 │   └── iso-1 through iso-24
 ├── docs/                      # Architectural documentation
@@ -41,15 +42,22 @@ backlog/
 | **m-5** | Profiled Environment Materialization and Configuration | `ISO-13` through `ISO-18` | Complete |
 | **m-6** | Code Quality and Proxy Resilience | `ISO-19` through `ISO-22` | Complete |
 | **m-7** | Reviewed Ingestion and Storage Publication | `ISO-23`, `ISO-24` | Complete |
+| **m-8** | 0.1 Release Validation and Product Acceptance | Task IDs unassigned | Proposed |
 
 Milestone completion refers to its scoped tasks, not every architectural aspiration.
 ISO-23 implements reviewed local/explicit-connected ingestion, linear publication,
 conservative GC roots, and a cold offline consumer. ISO-24 adds reviewed, source-pinned
 atomic rollover, verified batch/profile retention, safe retries, and explicit successor
-adoption. Unsupported legacy/sharded formats receive conversion guidance. Direct registry solving,
-selective Git/HTTP transport, connected proxy-miss fetching, and broader native publication
-coverage remain later work. The PR guard verifies published snapshot completeness rather
-than discovering dependencies from arbitrary project lockfiles.
+adoption. Unsupported legacy/sharded formats receive conversion guidance. Direct registry
+solving, selective Git/HTTP transport, connected proxy-miss fetching, and broader native
+publication coverage remain deferred.
+
+**Proposed next:** [M8](milestones/m-8%20-%20m8-%E2%80%94-0.1-release-validation-and-product-acceptance.md)
+would gate the 0.1 claims on clean-room end-to-end workflows using installed release
+artifacts, a declared support matrix, offline replay/integrity/drift checks, and release
+rehearsal. Its scope and task breakdown should be confirmed before work begins; it does not
+silently add registry solving to the 0.1 product contract. The PR guard verifies published
+snapshot completeness rather than discovering dependencies from arbitrary project lockfiles.
 
 ---
 

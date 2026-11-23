@@ -7,7 +7,7 @@ explicitly tagged deferred specifications are not evidence of implemented capabi
 | :--- | :--- | :--- |
 | `cas-sharding.feature` | CAS Storage & Large Blob Sharding (>95M) | `crates/isolock-cas` |
 | `reviewed-ingestion.feature` | Verified ingestion, explicit Git publication, cold consumers, workflow safety, and GC roots | `crates/isolock` (CLI) |
-| `git-orphan-branch.feature` | **Deferred:** automatic epoch rollover (ISO-24), not an executed test | Future CLI/storage work |
+| `git-orphan-branch.feature` | Reviewed automatic epoch rollover, budgets, retention, recovery, and migration (ISO-24) | `crates/isolock` (CLI), `crates/isolock/tests/epoch_rollover.rs` |
 | `proxy-pypi.feature` | PyPI PEP 503 Simple Index Proxy | `crates/isolock-proxy` |
 | `proxy-conda.feature` | Conda Repodata Channel Proxy | `crates/isolock-proxy` |
 | `proxy-npm.feature` | NPM Registry Packument Proxy | `crates/isolock-proxy` |
@@ -30,4 +30,7 @@ CI profile/platform matrix using restored tools and no registry downloads.
 Reviewed ingestion/publication binds to `crates/isolock/tests/reviewed_ingestion.rs` and
 `ingestion_profiles.rs`. The latter publishes reviewed payloads, locks a profile to that
 commit, publishes its manifest, and exercises a cold offline consumer with fixture tools.
-It does not claim native publication across every platform or implement epoch rollover.
+Epoch rollover has executable real-CLI/disposable-remote contracts in
+`crates/isolock/tests/epoch_rollover.rs`. These fixture-driven publication contracts do not
+claim native publication across every platform; the separate `real_profile.rs` tests cover
+selected native offline materializers.
