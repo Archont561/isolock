@@ -42,7 +42,7 @@ backlog/
 | **m-5** | Profiled Environment Materialization and Configuration | `ISO-13` through `ISO-18` | Complete |
 | **m-6** | Code Quality and Proxy Resilience | `ISO-19` through `ISO-22` | Complete |
 | **m-7** | Reviewed Ingestion and Storage Publication | `ISO-23`, `ISO-24` | Complete |
-| **m-8** | 0.1 Release Validation and Product Acceptance | `ISO-25` through `ISO-29` | To Do |
+| **m-8** | 0.1 Release Validation and Product Acceptance | `ISO-25` through `ISO-29` | In Progress |
 
 Milestone completion refers to its scoped tasks, not every architectural aspiration.
 ISO-23 implements reviewed local/explicit-connected ingestion, linear publication,
@@ -53,11 +53,12 @@ solving, selective Git/HTTP transport, connected proxy-miss fetching, and broade
 publication coverage remain deferred.
 
 **Next:** [M8](milestones/m-8%20-%20m8-%E2%80%94-0.1-release-validation-and-product-acceptance.md)
-tracks 0.1 acceptance across clean-room end-to-end workflows, installed release artifacts,
-a reviewed support matrix, offline replay/integrity/drift checks, and release rehearsal.
-ISO-25 selects the exact support contract before the dependent test matrix is expanded;
-registry solving is not included by default. The PR guard verifies published snapshot
-completeness rather than discovering dependencies from arbitrary project lockfiles.
+has passed pre-merge acceptance and a non-publishing, three-platform release rehearsal on
+candidate `0a48e5c82963f4eb5687ae56928668ccb7a585c9`. Final completion is held until the
+change is integrated, the workflow is rerun on the exact merged `main` SHA, and a maintainer
+records GO/NO-GO. Registry solving remains outside 0.1 scope. The PR guard verifies
+published snapshot completeness rather than discovering dependencies from arbitrary
+project lockfiles.
 
 ---
 
