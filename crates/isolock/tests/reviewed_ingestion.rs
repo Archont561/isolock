@@ -91,8 +91,10 @@ fn tool_command(world: &World, task: &str) -> Command {
     let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/cli.py");
     let python = if cfg!(windows) { "python" } else { "python3" };
     let mut command = Command::new(python);
+    // `-B` keeps the checkout free of __pycache__, matching the workflow entry point.
     command
         .current_dir(world.temp.path())
+        .arg("-B")
         .arg(tools)
         .args(["airlock", task]);
     command

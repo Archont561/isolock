@@ -1,15 +1,16 @@
 #!/bin/sh
 # Portable entry point: pick the runner's Python and dispatch the tool CLI.
+# `-B` keeps the checkout free of __pycache__ directories (hygiene-no-python-cache).
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 if command -v python3 >/dev/null 2>&1; then
-    exec python3 "$root/tools/cli.py" "$@"
+    exec python3 -B "$root/tools/cli.py" "$@"
 fi
 if command -v python >/dev/null 2>&1; then
-    exec python "$root/tools/cli.py" "$@"
+    exec python -B "$root/tools/cli.py" "$@"
 fi
 if command -v py >/dev/null 2>&1; then
-    exec py -3 "$root/tools/cli.py" "$@"
+    exec py -3 -B "$root/tools/cli.py" "$@"
 fi
 echo 'no python3, python, or py launcher found on PATH' >&2
 exit 127
