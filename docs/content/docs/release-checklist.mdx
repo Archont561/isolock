@@ -43,7 +43,8 @@ one.
 
 | Candidate SHA | CI run | Non-publishing release run | Decision / date |
 | --- | --- | --- | --- |
-| `416239cc34bdff000ee00212c927375c4ac7a8f9` (PR #20; not merged) | [all required checks passed](https://github.com/Archont561/isolock/actions/runs/45196395631) | [all builds and smoke tests passed; both publish jobs skipped](https://github.com/Archont561/isolock/actions/runs/45196394309) | **HOLD — repeat against the final merged `main` SHA and record maintainer GO/NO-GO** |
+| `416239cc34bdff000ee00212c927375c4ac7a8f9` (superseded PR #20 revision) | [checks passed](https://github.com/Archont561/isolock/actions/runs/45196395631) | [initial build/smoke rehearsal passed](https://github.com/Archont561/isolock/actions/runs/45196394309); package-bundle verification was added afterward | **HOLD — superseded** |
+| `0a48e5c82963f4eb5687ae56928668ccb7a585c9` (PR #20; not merged) | [all required checks passed](https://github.com/Archont561/isolock/actions/runs/45200157446) | [acceptance, all native builds, standalone checksums/smokes, Conda checksums/archive checks, and candidate bundle passed; both publish jobs skipped](https://github.com/Archont561/isolock/actions/runs/45200152449) | **HOLD — repeat against the final merged `main` SHA and record maintainer GO/NO-GO** |
 
 ## Post-release verification
 
