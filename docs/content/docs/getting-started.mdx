@@ -5,19 +5,16 @@ description: Installation and basic usage workflows for Isolock.
 
 ## Installation
 
-Install Isolock using your package manager of choice:
+For Isolock 0.1, use the standalone archive for one of the tested targets in the
+[0.1 support matrix](./support.mdx): Linux x86_64 GNU, macOS arm64, or Windows x86_64.
+Download it from [GitHub Releases](https://github.com/Archont561/isolock/releases), verify
+`SHA256SUMS`, then extract the archive and place the binary on `PATH`. The Windows archive
+contains `isolock.exe`.
 
-### Via Conda / Pixi
-
-```sh
-pixi add isolock --channel conda-forge
-```
-
-Or from source:
-
-```sh
-cargo install --locked --path crates/isolock
-```
+The release workflow also publishes Conda packages to the `archont561/archont561`
+Prefix.dev channel; availability and exact instructions are listed with each release. A
+Cargo source installation is useful for development, but CI's installed-release-artifact
+job is the 0.1 support evidence.
 
 ## Basic Commands
 

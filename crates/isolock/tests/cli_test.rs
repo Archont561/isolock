@@ -169,6 +169,191 @@ fn test_cli_subcommands() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One public-CLI journey checks all supported registry wire formats.
+fn cli_serves_all_four_registry_protocols_from_a_cold_locked_snapshot() {
+    let bin = env!("CARGO_BIN_EXE_isolock");
+    let fixture_dir = temporary_directory();
+    let cas_dir = fixture_dir.path().join("cas");
+    fs::create_dir_all(&cas_dir).expect("creates an isolated CAS directory");
+
+    let artifacts = [
+        (
+            "Pypi",
+            "requests",
+            "2.32.3",
+            "requests-2.32.3-py3-none-any.whl",
+            b"fixture wheel bytes".as_slice(),
+            serde_json::json!({"name":"requests","version":"2.32.3"}),
+        ),
+        (
+            "Conda",
+            "python",
+            "3.12.7",
+            "python-3.12.7-h55ee38b_0.conda",
+            b"fixture conda bytes".as_slice(),
+            serde_json::json!({
+                "name":"python", "version":"3.12.7", "build":"h55ee38b_0",
+                "build_number":0, "subdir":"linux-64", "depends":[]
+            }),
+        ),
+        (
+            "Npm",
+            "zod",
+            "3.23.8",
+            "zod-3.23.8.tgz",
+            b"fixture npm bytes".as_slice(),
+            serde_json::json!({"package_json":{"name":"zod","version":"3.23.8"}}),
+        ),
+        (
+            "Cargo",
+            "serde",
+            "1.0.210",
+            "serde-1.0.210.crate",
+            b"fixture cargo bytes".as_slice(),
+            serde_json::json!({
+                "Cargo.toml": r#"[package]
+name = "serde"
+version = "1.0.210"
+"#
+            }),
+        ),
+    ];
+    let mut planned = Vec::new();
+    let mut metadata = Vec::new();
+    let mut pypi_blob = None;
+    for (registry, name, version, filename, bytes, registry_metadata) in artifacts {
+        let digest = Sha256Digest::from_bytes(bytes);
+        let blob = cas_dir.join(digest.sharded_path());
+        fs::create_dir_all(blob.parent().expect("CAS digest has a parent shard"))
+            .expect("creates CAS shard directory");
+        fs::write(&blob, bytes).expect("writes a reviewed fixture blob");
+        if registry == "Pypi" {
+            pypi_blob = Some((blob, bytes.to_vec()));
+        }
+        planned.push(serde_json::json!({
+            "name": name, "version": version, "registry": registry, "digest": digest.as_str()
+        }));
+        metadata.push(serde_json::json!({
+            "filename": filename, "registry_metadata": registry_metadata
+        }));
+    }
+    let plan_path = fixture_dir.path().join("plan.json");
+    fs::write(
+        &plan_path,
+        serde_json::to_vec(&serde_json::json!({
+            "artifacts": planned,
+            "artifact_metadata": metadata,
+        }))
+        .expect("serializes the reviewed plan"),
+    )
+    .expect("writes the reviewed plan");
+
+    let plan = Command::new(bin)
+        .args(["plan", "--ci"])
+        .current_dir(fixture_dir.path())
+        .env("ISOLOCK_PLAN", &plan_path)
+        .env("ISOLOCK_CAS_DIR", &cas_dir)
+        .output()
+        .expect("checks the real CLI plan");
+    assert!(
+        plan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    assert!(String::from_utf8_lossy(&plan.stdout).contains("Verdict: ALL DEPENDENCIES SATISFIED"));
+
+    let (pypi_blob, pypi_bytes) = pypi_blob.expect("fixture includes a PyPI wheel");
+    fs::write(&pypi_blob, b"tampered bytes").expect("corrupts the planned wheel");
+    let drift = Command::new(bin)
+        .args(["plan", "--ci"])
+        .current_dir(fixture_dir.path())
+        .env("ISOLOCK_PLAN", &plan_path)
+        .env("ISOLOCK_CAS_DIR", &cas_dir)
+        .output()
+        .expect("rechecks the tampered CAS through the CLI");
+    assert_eq!(drift.status.code(), Some(1));
+    let drift_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&drift.stdout),
+        String::from_utf8_lossy(&drift.stderr)
+    );
+    assert!(
+        drift_output.contains("SHA-256 mismatch"),
+        "tampering fails with an integrity diagnostic: {drift_output}"
+    );
+    fs::write(&pypi_blob, pypi_bytes).expect("restores the reviewed wheel for proxy use");
+
+    let child_test = std::env::current_exe().expect("locates this integration-test executable");
+    let output = Command::new(bin)
+        .arg("exec")
+        .arg(child_test)
+        .args([
+            "--exact",
+            "exec_child_probes_four_registry_protocols",
+            "--nocapture",
+        ])
+        .current_dir(fixture_dir.path())
+        .env("ISOLOCK_PLAN", &plan_path)
+        .env("ISOLOCK_CAS_DIR", &cas_dir)
+        .env("ISOLOCK_M8_PROXY_PROBE", "1")
+        .output()
+        .expect("runs an independent client through the public exec command");
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn exec_child_probes_four_registry_protocols() {
+    if std::env::var_os("ISOLOCK_M8_PROXY_PROBE").is_none() {
+        return;
+    }
+    let origin = std::env::var("ISOLOCK_PROXY_URL").expect("exec sets the local proxy URL");
+    let address = origin
+        .strip_prefix("http://")
+        .expect("local proxy is plain HTTP")
+        .to_owned();
+    assert!(std::env::var("PIP_INDEX_URL")
+        .expect("exec configures PyPI")
+        .starts_with(&format!("{origin}/pypi/simple")));
+    assert!(std::env::var("NPM_CONFIG_REGISTRY")
+        .expect("exec configures npm")
+        .starts_with(&format!("{origin}/npm/")));
+    assert!(std::env::var("CARGO_REGISTRIES_CRATES_IO_INDEX")
+        .expect("exec configures Cargo")
+        .starts_with(&format!("sparse+{origin}/cargo/")));
+    assert!(std::env::var("PIXI_CONDA_CHANNELS")
+        .expect("exec configures Conda")
+        .starts_with(&format!("{origin}/conda/channel")));
+
+    for path in [
+        "/pypi/simple/requests/",
+        "/pypi/packages/requests-2.32.3-py3-none-any.whl",
+        "/conda/channel/conda-forge/linux-64/repodata.json",
+        "/conda/channel/conda-forge/linux-64/python-3.12.7-h55ee38b_0.conda",
+        "/npm/zod",
+        "/npm/zod/-/zod-3.23.8.tgz",
+        "/cargo/config.json",
+        "/cargo/se/rd/serde",
+        "/cargo/api/v1/crates/serde/1.0.210/download",
+    ] {
+        let response = http_get(&address, path);
+        assert!(
+            response.starts_with(b"HTTP/1.1 200 OK\r\n"),
+            "{path}: {response:?}"
+        );
+    }
+    let miss = http_get(&address, "/npm/not-in-the-reviewed-snapshot");
+    assert!(
+        miss.starts_with(b"HTTP/1.1 403 Forbidden\r\n"),
+        "unreviewed package fails closed: {miss:?}"
+    );
+}
+
+#[test]
 fn pull_request_workflow_skips_drift_audit_without_storage_ref() {
     let workflow: serde_yaml::Value =
         serde_yaml::from_str(include_str!("../../../.github/workflows/isolock.yml"))

@@ -65,6 +65,7 @@ pixi run --as-is --offline sh scripts/coverage.sh
 
 - [Architecture Documents](backlog/docs/) - CAS layout, Git orphan branch storage, loopback proxy interception, and POSIX bootstrapping
 - [Architecture Decisions](backlog/decisions/) - recorded ADRs for zero-infrastructure storage, pure shell bootstrapping, and canonical crate reuse
+- [0.1 Support Matrix](docs/content/docs/support.mdx) - tested targets, workflows, and explicit release limits
 - [Backlog & Roadmap](backlog/README.md) - delivery milestones, tasks, and acceptance criteria
 - [Gherkin Contracts](backlog/features/) - executable specification scenarios for CAS, proxy, and plan verification
 

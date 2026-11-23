@@ -82,3 +82,71 @@ jobs:
             *) exit 2 ;;
           esac
           .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline "$test" -- --ignored --nocapture
+
+  product-acceptance:
+    name: CLI, profile, and storage acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Restore reviewed developer tooling from CAS
+        run: bash scripts/restore.sh
+      - name: Exercise real-CLI registry and cold-storage journeys
+        run: >-
+          .pixi/tools/linux-64/pixi run --as-is --offline cargo nextest run
+          --package isolock --test cli_test --test epoch_rollover
+          --test ingestion_profiles --offline
+
+  release-artifact-smoke:
+    name: Release artifact smoke / ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            binary: isolock
+          - os: macos-latest
+            platform: macos-arm64
+            target: aarch64-apple-darwin
+            binary: isolock
+          - os: windows-latest
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            binary: isolock.exe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Build native release binary
+        run: cargo build --release --locked --package isolock --target ${{ matrix.target }}
+      - name: Package, checksum, extract, and smoke-test the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          test "$host" = "${{ matrix.target }}" || {
+            echo "runner host $host cannot natively execute ${{ matrix.target }}" >&2
+            exit 1
+          }
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          mkdir -p "$scratch/stage" "$scratch/extracted"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$scratch/stage/${{ matrix.binary }}"
+          archive="isolock-${{ matrix.platform }}.tar.gz"
+          (cd "$scratch/stage" && tar -czf "$scratch/$archive" "${{ matrix.binary }}")
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "$scratch" && sha256sum "$archive" > SHA256SUMS && sha256sum --check SHA256SUMS)
+          else
+            (cd "$scratch" && shasum -a 256 "$archive" > SHA256SUMS && shasum -a 256 --check SHA256SUMS)
+          fi
+          tar -xzf "$scratch/$archive" -C "$scratch/extracted"
+          sh scripts/release-smoke.sh "$scratch/extracted/${{ matrix.binary }}"

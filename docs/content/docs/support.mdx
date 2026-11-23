@@ -1,0 +1,62 @@
+---
+title: 0.1 Support and test matrix
+description: Tested 0.1 host targets, install artifacts, workflows, and explicit limits.
+---
+
+## 0.1 support contract
+
+This page is the support contract for Isolock `0.1.0`. An artifact being built or uploaded
+is not, by itself, evidence that the corresponding workflow is supported. The table below
+separates native CLI artifact coverage from the narrower profile-materialization matrix.
+
+| Surface | 0.1 tested support | Acceptance evidence |
+| --- | --- | --- |
+| Standalone CLI archive | Linux x86_64 GNU, macOS arm64, Windows x86_64 | Native release-artifact smoke job: extract the archive; verify version/help, typed config, and a clean CI plan. |
+| Conda CLI package | `linux-64`, `osx-arm64`, and `win-64` packages built by the release workflow | Native `rattler-build` recipe test invokes the installed package's version, help, and configuration commands. |
+| Locked-profile runtime materialization | `linux-64`: `rust-pixi` and `rust-standalone` | Required CI jobs restore selected reviewed profiles and run offline. This is not a claim for other OS/architecture/profile combinations. |
+| Reviewed storage publication | Linux CI with disposable local Git remotes | Real CLI tests cover ingestion, publication, cold restoration, epoch policy, retries, and producer checkout/index preservation. No test writes to project artifact storage. |
+| Registry proxy protocols | PyPI, Conda, npm, and Cargo through the `isolock exec` CLI path on Linux | Required user-journey test requests each metadata and artifact endpoint from a pinned local snapshot, rejects an unreviewed miss, and checks CAS tampering fails closed. |
+
+The native artifact smoke check validates that each released standalone CLI can start,
+parse commands, validate default configuration, and check an empty legacy plan on its
+host. The Conda recipe test checks package installation and CLI startup. These checks do
+not assert native profile materialization on macOS or Windows.
+
+## Workflow and trust boundaries
+
+The 0.1 contract uses exact, reviewed inputs. Isolock does not select versions or solve
+registry dependency graphs. Planning consumes supported lockfiles and reviewed metadata;
+ingestion accepts explicit names, versions, sources, and digests. Connected acquisition is
+explicit and pin-verified. Missing proxy artifacts fail closed; a proxy listener is not a
+host firewall or a general network sandbox.
+
+The proxy acceptance test exercises real CLI process/environment routing and HTTP protocol
+responses against a deterministic local CAS snapshot. It does **not** run pip, Pixi/Conda,
+npm, or Cargo as package-manager clients in the acceptance fixture. Package-manager
+transaction compatibility beyond the tested protocol routes remains a follow-up before
+making a stronger claim.
+
+The profile matrix proves only the selected Rust/Pixi and standalone Rust workflows on
+`linux-64`. Other runtime providers, host/target combinations, artifact sizes, and connected
+proxy-miss behavior are not covered by this 0.1 support statement. Archived storage epochs
+are retained; rollover budgets are not a global remote-size limit, and legacy/sharded
+storage conversion is not automatic.
+
+## Install the tested CLI
+
+Use the standalone archive for your host from the [GitHub Releases](https://github.com/Archont561/isolock/releases)
+page and verify it against the accompanying `SHA256SUMS`. The release workflow also
+publishes Conda packages to the `archont561/archont561` Prefix.dev channel; see that release
+for package availability and channel instructions. Building from source with Rust is a
+developer route, not a substitute for the installed-artifact acceptance job.
+
+After installation, verify the CLI and local configuration:
+
+```sh
+isolock --version
+isolock --help
+isolock config check
+```
+
+Use the [Getting Started guide](./getting-started.mdx) for supported lock/profile inputs,
+reviewed ingestion, and offline materialization details.
