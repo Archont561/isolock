@@ -1,0 +1,53 @@
+---
+title: 0.1 release validation checklist
+description: Reproducible go/no-go procedure for the first public Isolock release.
+---
+
+## Release scope
+
+The first release is `0.1.0` (`v0.1.0`). The tested support statement is in the
+[0.1 support matrix](./support.mdx). It is intentionally narrower than the project's
+architecture: no registry solver, no automatic legacy/sharded storage conversion, and no
+profile-materialization claim for macOS or Windows.
+
+## Required evidence before tagging
+
+Record the exact candidate commit and complete every item below against that commit. A CI
+run on a different SHA is useful context, but is not a substitute for evidence on the
+candidate.
+
+- [ ] The candidate is merged to `main`; record its full 40-character commit SHA.
+- [ ] The required CI checks pass on that SHA: quality/security, workspace tests and
+  coverage, CLI/profile/storage acceptance, both Linux profile jobs, and native standalone
+  release-artifact smoke jobs for Linux x86_64, macOS arm64, and Windows x86_64.
+- [ ] The **Release & Publish** workflow is dispatched on that candidate with
+  `publish=false`. Its Linux/macOS/Windows binary and Conda-package builds succeed, release
+  archive checksums verify, extracted binaries pass the smoke test, and both publication
+  jobs are skipped.
+- [ ] Review the workflow run and its job summaries; confirm the candidate SHA matches the
+  one selected above and that no release tag was pushed during rehearsal.
+- [ ] A maintainer records an explicit GO/NO-GO decision, date, candidate SHA, and links to
+  the CI and non-publishing release workflow runs below.
+
+Only after a GO, create and push the annotated `v0.1.0` tag at the reviewed commit. A `v*`
+tag push intentionally starts the publishing workflow: it publishes the Conda packages to
+Prefix.dev and creates the GitHub Release with standalone archives, Conda packages, and
+`SHA256SUMS`. Do not use a tag push as a rehearsal. The manual workflow's `publish=false`
+mode is the rehearsal path and does not publish either destination.
+
+## Evidence record
+
+Keep one record for each candidate; do not replace a record for a previous SHA with a newer
+one.
+
+| Candidate SHA | CI run | Non-publishing release run | Decision / date |
+| --- | --- | --- | --- |
+| Pending merge and candidate selection | [CI](https://github.com/Archont561/isolock/actions/workflows/ci.yml) | [Release & Publish](https://github.com/Archont561/isolock/actions/workflows/release.yml) | **HOLD — no release authorized** |
+
+## Post-release verification
+
+After the tag-triggered workflow succeeds, verify the GitHub Release contains each expected
+platform's standalone archive, platform binary, Conda package, and `SHA256SUMS`. Download
+the release assets and verify the checksums. Confirm the Conda packages are visible in the
+`archont561/archont561` Prefix.dev channel. Record the published release URL and final tag
+commit in the evidence table or release notes.
