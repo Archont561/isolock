@@ -13,7 +13,7 @@ separates native CLI artifact coverage from the narrower profile-materialization
 | --- | --- | --- |
 | Standalone CLI archive | Linux x86_64 GNU, macOS arm64, Windows x86_64 | Native release-artifact smoke job: extract the archive; verify version/help, typed config, and a clean CI plan. |
 | Conda CLI package | `linux-64`, `osx-arm64`, and `win-64` packages built by the release workflow | Native `rattler-build` recipe test invokes the installed package's version, help, and configuration commands. |
-| Locked-profile runtime materialization | `linux-64`: `rust-pixi` and `rust-standalone` | Required CI jobs restore selected reviewed profiles and run offline. This is not a claim for other OS/architecture/profile combinations. |
+| Locked-profile runtime materialization | `linux-64`: `rust-pixi` and `rust-standalone` | Required CI jobs restore selected reviewed profiles and run offline. `rust-pixi` additionally installs one deterministic Conda fixture with real Pixi after payload/profile publication to a disposable Git branch and a cold consumer fetch; the remote is removed before offline sync. This is not a claim for other OS/architecture/profile combinations. |
 | Reviewed storage publication | Linux CI with disposable local Git remotes | Real CLI tests cover ingestion, publication, cold restoration, epoch policy, retries, and producer checkout/index preservation. No test writes to project artifact storage. |
 | Registry proxy protocols | PyPI, Conda, npm, and Cargo through the `isolock exec` CLI path on Linux | Required user-journey test requests each metadata and artifact endpoint from a pinned local snapshot, rejects an unreviewed miss, and checks CAS tampering fails closed. |
 

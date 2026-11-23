@@ -82,6 +82,9 @@ jobs:
             *) exit 2 ;;
           esac
           .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline "$test" -- --ignored --nocapture
+          if [ "$ISOLOCK_TEST_PROFILE" = rust-pixi ]; then
+            .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline real_pixi_conda_profile_roundtrips_through_git_storage_and_installs_offline -- --ignored --nocapture
+          fi
 
   product-acceptance:
     name: CLI, profile, and storage acceptance
