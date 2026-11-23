@@ -15,13 +15,11 @@ This document governs agent-assisted development in `isolock`.
 4. **Behavior Contracts**: User-facing promises must have an accompanying BDD scenario in `features/*.feature` with `rstest-bdd` step bindings.
 5. **No Network in CI**: Tests must run hermetically with `--offline`.
 6. **Pixi Inaccessibility Fallback**: Whenever `pixi` is inaccessible, missing from `PATH`, or fails in an unprovisioned environment, agents must run `bash scripts/restore.sh` to restore the locked developer sandbox.
+7. **Workflow Steps Stay Declarative**: Every `.github/workflows/` `run:` step is a single line that delegates to `tools/cli.py` through the `pixi run tools` task, a pixi task, or `scripts/restore.sh`. Multi-line logic belongs in `tools/*.py`.
 
 ## Verification Commands
 
-- `cargo nextest run --workspace`
-- `cargo test --workspace`
-- `cargo llvm-cov --workspace --summary-only`
-- `alint`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo fmt --check`
-- `cargo deny check bans licenses sources`
+- `pixi run --as-is --offline tools test nextest`
+- `pixi run --as-is --offline tools test bdd`
+- `pixi run --as-is --offline tools quality all`
+- `pixi run --as-is --offline tools test coverage`

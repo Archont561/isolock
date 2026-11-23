@@ -35,29 +35,12 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - name: Restore reviewed developer tooling
         run: bash scripts/restore.sh
-      - name: Check formatting and lint
-        run: |
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo fmt --check
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo clippy --workspace --all-targets --offline -- -D warnings
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo deny --offline check bans licenses sources
+      - name: Check formatting, lint, and supply chain
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools quality all
       - name: Run unit, BDD, property, and CLI/storage acceptance
-        run: |
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo nextest run --workspace --offline
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --workspace --offline
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo nextest run --package isolock --test cli_test --test epoch_rollover --test ingestion_profiles --offline
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools test all
       - name: Exercise offline locked-profile journeys
-        shell: bash
-        env:
-          ISOLOCK_TEST_PLATFORM: linux-64
-          ISOLOCK_TEST_PIXI: ${{ github.workspace }}/.pixi/tools/linux-64/pixi
-          ISOLOCK_TEST_RUST_PREFIX: ${{ github.workspace }}/.pixi/envs/default
-        run: |
-          set -euo pipefail
-          export ISOLOCK_TEST_PROFILE=rust-pixi
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline real_pixi_restores_the_selected_profile_from_a_cold_offline_cache -- --ignored --nocapture
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline real_pixi_conda_profile_roundtrips_through_git_storage_and_installs_offline -- --ignored --nocapture
-          export ISOLOCK_TEST_PROFILE=rust-standalone
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline real_standalone_rust_builds_a_locked_registry_dependency_offline -- --ignored --nocapture
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools test profile-journeys
 
   build:
     needs: release-acceptance
@@ -93,17 +76,6 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - name: Validate manual publish tag
-        if: github.event_name == 'workflow_dispatch' && inputs.publish == true
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          case "$RELEASE_TAG" in
-            v*) ;;
-            *) echo "Publishing requires an explicit v* tag" >&2; exit 1 ;;
-          esac
-
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
@@ -118,57 +90,41 @@ jobs:
           cache: false
 
       - name: Install rattler-build
-        run: pixi global install rattler-build
-
-      - name: Build Standalone Rust Binary
-        run: cargo build --release --locked --package isolock --target ${{ matrix.target }}
-
-      - name: Stage Standalone Binary Artifacts
         shell: bash
-        run: |
-          mkdir -p dist/binaries
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/isolock.exe" "dist/binaries/isolock-${{ matrix.platform }}.exe"
-            tar -czvf "dist/binaries/${{ matrix.archive_name }}" -C "target/${{ matrix.target }}/release" isolock.exe
-          else
-            cp "target/${{ matrix.target }}/release/isolock" "dist/binaries/isolock-${{ matrix.platform }}"
-            chmod +x "dist/binaries/isolock-${{ matrix.platform }}"
-            tar -czvf "dist/binaries/${{ matrix.archive_name }}" -C "target/${{ matrix.target }}/release" isolock
-          fi
-          if command -v sha256sum >/dev/null 2>&1; then
-            (cd dist/binaries && sha256sum ./* > SHA256SUMS)
-          else
-            (cd dist/binaries && shasum -a 256 ./* > SHA256SUMS)
-          fi
+        run: sh tools/run release install-rattler-build
 
-      - name: Build Conda Package
+      - name: Validate manual publish tag
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
-        run: |
-          mkdir -p dist/conda
-          rattler-build build --recipe crates/isolock/recipe.yaml --target-platform ${{ matrix.conda_arch }} --output-dir dist/conda
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_PUBLISH: ${{ inputs.publish }}
+        run: sh tools/run release check-tag
+
+      - name: Build standalone Rust binary
+        shell: bash
+        run: sh tools/run release build-binary --target ${{ matrix.target }}
+
+      - name: Stage standalone binary artifacts
+        shell: bash
+        run: sh tools/run release stage-binaries --platform ${{ matrix.platform }} --binary ${{ matrix.binary_name }} --archive-name ${{ matrix.archive_name }} --target ${{ matrix.target }}
+
+      - name: Build Conda package
+        shell: bash
+        run: sh tools/run release build-conda --platform ${{ matrix.conda_arch }}
+
       - name: Checksum Conda package
         shell: bash
-        run: |
-          python - <<'PY'
-          from hashlib import sha256
-          from pathlib import Path
+        run: sh tools/run release checksum-conda
 
-          root = Path("dist/conda")
-          packages = sorted(root.rglob("*.conda"))
-          if len(packages) != 1:
-              raise SystemExit(f"expected one Conda package, found {len(packages)}")
-          lines = [f"{sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root).as_posix()}" for path in packages]
-          (root / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
-          PY
-
-      - name: Upload Standalone Binary Artifacts
+      - name: Upload standalone binary artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binary-${{ matrix.platform }}
           path: dist/binaries/*
           if-no-files-found: error
 
-      - name: Upload Conda Package Artifacts
+      - name: Upload Conda package artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: conda-${{ matrix.platform }}
@@ -203,6 +159,12 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.tag || github.ref }}
+      - name: Setup Pixi
+        uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+        with:
+          pixi-version: latest
+          run-install: false
+          cache: false
       - name: Download native standalone artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -210,18 +172,7 @@ jobs:
           path: dist/binaries
       - name: Verify checksums and smoke-test extracted release binary
         shell: bash
-        run: |
-          set -euo pipefail
-          repo="$PWD"
-          artifact_dir="$repo/dist/binaries"
-          if command -v sha256sum >/dev/null 2>&1; then
-            (cd "$artifact_dir" && sha256sum --check SHA256SUMS)
-          else
-            (cd "$artifact_dir" && shasum -a 256 --check SHA256SUMS)
-          fi
-          mkdir -p "$artifact_dir/extracted"
-          tar -xzf "$artifact_dir/${{ matrix.archive_name }}" -C "$artifact_dir/extracted"
-          sh scripts/release-smoke.sh "$artifact_dir/extracted/${{ matrix.binary_name }}"
+        run: sh tools/run release verify-binary --archive-name ${{ matrix.archive_name }} --binary ${{ matrix.binary_name }}
 
   verify-release-assets:
     name: Verify Conda packages and assemble release candidate
@@ -229,6 +180,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Setup Pixi
+        uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+        with:
+          pixi-version: latest
+          run-install: false
+          cache: false
       - name: Download standalone artifacts without flattening
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -241,46 +202,7 @@ jobs:
           path: dist/conda
       - name: Verify package checksums, archive integrity, and assemble unique assets
         shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from hashlib import sha256
-          from pathlib import Path
-          import shutil
-          import zipfile
-
-          root = Path("dist")
-          binaries = sorted((root / "binaries").glob("binary-*"))
-          conda_sets = sorted((root / "conda").glob("conda-*"))
-          if len(binaries) != 3 or len(conda_sets) != 3:
-              raise SystemExit(f"expected 3 binary and 3 Conda artifact sets; got {len(binaries)} and {len(conda_sets)}")
-          release = root / "release"
-          release.mkdir(parents=True, exist_ok=True)
-          packages = []
-          for artifact_set in binaries + conda_sets:
-              sums = artifact_set / "SHA256SUMS"
-              if not sums.is_file():
-                  raise SystemExit(f"missing checksum manifest: {sums}")
-              for line in sums.read_text(encoding="utf-8").splitlines():
-                  expected, relative = line.split(maxsplit=1)
-                  relative = relative.lstrip("*").strip()
-                  source = artifact_set / relative
-                  if not source.is_file() or sha256(source.read_bytes()).hexdigest() != expected:
-                      raise SystemExit(f"artifact checksum mismatch: {source}")
-                  if source.suffix == ".conda":
-                      with zipfile.ZipFile(source) as archive:
-                          if archive.testzip() is not None:
-                              raise SystemExit(f"corrupt Conda archive: {source}")
-                      packages.append(source)
-                  destination = release / source.name
-                  if destination.exists():
-                      raise SystemExit(f"duplicate release asset basename: {source.name}")
-                  shutil.copy2(source, destination)
-          archives = list(release.glob("*.tar.gz"))
-          if len(archives) != 3 or len(packages) != 3:
-              raise SystemExit(f"expected 3 standalone archives and 3 Conda packages; got {len(archives)} and {len(packages)}")
-          PY
-          (cd dist/release && sha256sum ./* > SHA256SUMS && sha256sum --check SHA256SUMS)
+        run: sh tools/run release assemble-candidate
       - name: Upload verified release candidate (no publication)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -299,17 +221,12 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.tag || github.ref }}
-
-      - name: Download Conda package artifacts without flattening
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: conda-*
-          path: dist/conda
 
       - name: Setup Pixi
         uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
@@ -319,28 +236,24 @@ jobs:
           cache: false
 
       - name: Install rattler-build
-        run: pixi global install rattler-build
-
-      - name: Verify GitHub OIDC Permissions
         shell: bash
-        run: |
-          : "${ACTIONS_ID_TOKEN_REQUEST_URL:?missing GitHub OIDC request URL; grant permissions.id-token: write}"
-          : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?missing GitHub OIDC request token; grant permissions.id-token: write}"
+        run: sh tools/run release install-rattler-build
 
-      - name: Publish Package to prefix.dev (Trusted Publishing OIDC)
+      - name: Download Conda package artifacts without flattening
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: conda-*
+          path: dist/conda
+
+      - name: Verify GitHub OIDC permissions
+        shell: bash
+        run: sh tools/run release verify-oidc
+
+      - name: Publish package to prefix.dev with trusted publishing
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -d '' packages < <(find dist/conda -type f -name '*.conda' -print0)
-          test "${#packages[@]}" -eq 3
-          rattler-build upload prefix \
-            --channel archont561/archont561 \
-            --generate-attestation \
-            --store-github-attestation \
-            --skip-existing \
-            "${packages[@]}"
+        run: sh tools/run release publish-conda --channel archont561/archont561
 
   publish-github:
     name: Publish GitHub Release

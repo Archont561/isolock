@@ -27,6 +27,9 @@ coverage-summary = "cargo llvm-cov --workspace --all-features --text"
 [feature.python.dependencies]
 python = ">=3.9,<4"
 
+[feature.python.tasks]
+tools = "sh tools/run"
+
 [feature.ts.dependencies]
 bun = "==1.4.2"
 

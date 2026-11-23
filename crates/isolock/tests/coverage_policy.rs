@@ -97,7 +97,7 @@ fn complete_report(world: &CoverageWorld) {
         .unwrap();
     assert!(steps.iter().any(|step| step["run"]
         .as_str()
-        .is_some_and(|command| command.ends_with("sh scripts/coverage.sh"))));
+        .is_some_and(|command| command.ends_with("tools test coverage"))));
     let command = SCRIPT
         .lines()
         .find(|line| line.starts_with("exec cargo llvm-cov "))

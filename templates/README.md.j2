@@ -56,12 +56,10 @@ bootstrap remain available for existing airlock plans.
 ```sh
 bash scripts/restore.sh  # restore the reviewed developer tooling/Cargo vendor sandbox
 export PATH="$HOME/.local/bin:$PATH"
-pixi run --as-is --offline cargo nextest run --workspace --offline
-pixi run --as-is --offline cargo test --workspace --offline
-pixi run --as-is --offline cargo clippy --workspace --all-targets --offline -- -D warnings
-pixi run --as-is --offline cargo deny --offline check bans licenses sources
-pixi run --as-is --offline cargo fmt --check
-pixi run --as-is --offline sh scripts/coverage.sh
+pixi run --as-is --offline tools test nextest
+pixi run --as-is --offline tools test bdd
+pixi run --as-is --offline tools quality all
+pixi run --as-is --offline tools test coverage
 ```
 
 ## Documentation

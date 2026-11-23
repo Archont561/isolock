@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "docs/**"
+      - "tools/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
     inputs:
@@ -44,65 +45,22 @@ jobs:
           bun-version: latest
 
       - name: Install documentation dependencies
-        working-directory: docs
-        run: bun install --frozen-lockfile
+        shell: bash
+        run: sh tools/run docs install
 
       - name: Build static Fumadocs export (docs/out)
-        working-directory: docs
-        run: bun run build
+        shell: bash
+        run: sh tools/run docs build
 
       - name: Detect GitHub Pages availability
+        shell: bash
         id: pages-status
         env:
           GH_TOKEN: ${{ github.token }}
           ENABLE_PAGES: ${{ vars.ENABLE_PAGES }}
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_DEPLOY: ${{ inputs.deploy }}
-        run: |
-          set -euo pipefail
-          write_status() {
-            local enabled="$1"
-            local note="$2"
-            echo "enabled=${enabled}" >> "$GITHUB_OUTPUT"
-            echo "$note"
-            {
-              echo "### GitHub Pages status"
-              echo ""
-              echo "$note"
-            } >> "$GITHUB_STEP_SUMMARY"
-          }
-
-          if [ "${ENABLE_PAGES:-}" = "false" ]; then
-            write_status "false" "Skipped deployment: repository variable \`ENABLE_PAGES\` is \`false\`."
-            exit 0
-          fi
-
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${DISPATCH_DEPLOY}" = "false" ]; then
-            write_status "false" "Skipped deployment: manual \`workflow_dispatch\` requested build-only mode."
-            exit 0
-          fi
-
-          body_file="$(mktemp)"
-          trap 'rm -f "$body_file"' EXIT
-          http_code="$(curl -sS -o "$body_file" -w "%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pages" || echo "000")"
-
-          if [ "$http_code" = "200" ]; then
-            build_type="$(jq -r '.build_type // ""' "$body_file")"
-            if [ "$build_type" = "workflow" ]; then
-              write_status "true" "GitHub Pages is enabled (source: GitHub Actions). Deploying \`docs/out\`."
-            else
-              write_status "false" "Skipped deployment: GitHub Pages \`build_type\` is \`${build_type:-unknown}\` (expected \`workflow\`). Set **Settings -> Pages -> Source: GitHub Actions** to enable automatic deploys."
-            fi
-          elif [ "$http_code" = "404" ] || [ "$http_code" = "403" ]; then
-            write_status "false" "Skipped deployment: GitHub Pages is not enabled or unavailable for this repository (HTTP ${http_code}). Enable **Settings -> Pages -> Source: GitHub Actions** when ready."
-          else
-            echo "::warning::Unable to query GitHub Pages status (HTTP ${http_code}); skipping deployment."
-            write_status "false" "Skipped deployment: unable to confirm GitHub Pages availability (HTTP ${http_code})."
-          fi
+        run: sh tools/run docs pages-status
 
       - name: Configure GitHub Pages
         if: ${{ steps.pages-status.outputs.enabled == 'true' }}
