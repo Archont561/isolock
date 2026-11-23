@@ -20,7 +20,7 @@ backlog/
 │   ├── m-7 - m7-—-reviewed-ingestion-and-storage-publication.md
 │   └── m-8 - m8-—-0.1-release-validation-and-product-acceptance.md
 ├── tasks/                     # Task files tracking work items
-│   └── iso-1 through iso-24
+│   └── iso-1 through iso-29
 ├── docs/                      # Architectural documentation
 │   └── doc-1 through doc-9
 ├── decisions/                 # Architecture Decision Records (ADRs)
@@ -42,7 +42,7 @@ backlog/
 | **m-5** | Profiled Environment Materialization and Configuration | `ISO-13` through `ISO-18` | Complete |
 | **m-6** | Code Quality and Proxy Resilience | `ISO-19` through `ISO-22` | Complete |
 | **m-7** | Reviewed Ingestion and Storage Publication | `ISO-23`, `ISO-24` | Complete |
-| **m-8** | 0.1 Release Validation and Product Acceptance | Task IDs unassigned | Proposed |
+| **m-8** | 0.1 Release Validation and Product Acceptance | `ISO-25` through `ISO-29` | To Do |
 
 Milestone completion refers to its scoped tasks, not every architectural aspiration.
 ISO-23 implements reviewed local/explicit-connected ingestion, linear publication,
@@ -52,12 +52,12 @@ adoption. Unsupported legacy/sharded formats receive conversion guidance. Direct
 solving, selective Git/HTTP transport, connected proxy-miss fetching, and broader native
 publication coverage remain deferred.
 
-**Proposed next:** [M8](milestones/m-8%20-%20m8-%E2%80%94-0.1-release-validation-and-product-acceptance.md)
-would gate the 0.1 claims on clean-room end-to-end workflows using installed release
-artifacts, a declared support matrix, offline replay/integrity/drift checks, and release
-rehearsal. Its scope and task breakdown should be confirmed before work begins; it does not
-silently add registry solving to the 0.1 product contract. The PR guard verifies published
-snapshot completeness rather than discovering dependencies from arbitrary project lockfiles.
+**Next:** [M8](milestones/m-8%20-%20m8-%E2%80%94-0.1-release-validation-and-product-acceptance.md)
+tracks 0.1 acceptance across clean-room end-to-end workflows, installed release artifacts,
+a reviewed support matrix, offline replay/integrity/drift checks, and release rehearsal.
+ISO-25 selects the exact support contract before the dependent test matrix is expanded;
+registry solving is not included by default. The PR guard verifies published snapshot
+completeness rather than discovering dependencies from arbitrary project lockfiles.
 
 ---
 
