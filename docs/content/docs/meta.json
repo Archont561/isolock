@@ -2,6 +2,7 @@
   "title": "Isolock Documentation",
   "pages": [
     "index",
+    "support",
     "getting-started",
     "ingestion",
     "storage-epochs",

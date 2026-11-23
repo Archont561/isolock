@@ -26,6 +26,8 @@ requirements:
 tests:
   - script:
       - isolock --version
+      - isolock --help
+      - isolock config check
 
 about:
   summary: Dedicated dependency airlock manager
