@@ -36,6 +36,7 @@ rules:
       - rust-workspace-cargo.schema.json
       - rust-crate-cargo.schema.json
       - github-workflow-hardening.schema.json
+      - github-workflow-run-steps.schema.json
       - lefthook-config.schema.json
     level: error
     message: "All repository policy JSON schemas must exist under .alint/schemas/."
@@ -122,6 +123,22 @@ rules:
     level: error
     message: "lefthook.yml must define commit-msg, pre-commit, and pre-push hooks."
 
+  - id: schema-github-workflow-hardening
+    kind: json_schema_passes
+    paths: ".github/workflows/*.yml"
+    format: yaml
+    schema_path: .alint/schemas/github-workflow-hardening.schema.json
+    level: error
+    message: "Every workflow must declare a name, permissions, a concurrency group, and job timeouts."
+
+  - id: schema-github-workflow-run-steps
+    kind: json_schema_passes
+    paths: ".github/workflows/*.yml"
+    format: yaml
+    schema_path: .alint/schemas/github-workflow-run-steps.schema.json
+    level: error
+    message: "Workflow run steps must be single-line calls to the tools task, a pixi task, or scripts/restore.sh."
+
   - id: max-one-line-comment-configs
     kind: file_content_forbidden
     paths:
@@ -133,3 +150,11 @@ rules:
     pattern: '(?m)^\s*[#;].*\r?\n\s*[#;]'
     level: error
     message: "Comments in TOML, YAML, and INI configuration files must be at most one line."
+
+  - id: workflow-run-steps-are-single-line
+    kind: file_content_forbidden
+    paths:
+      - ".github/workflows/*.yml"
+    pattern: '(?m)^\s*run:\s*[|>]'
+    level: error
+    message: "Workflow run steps must be single-line commands; move logic into tools/*.py."

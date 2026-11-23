@@ -24,12 +24,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Restore reviewed developer tooling from CAS
         run: bash scripts/restore.sh
-      - name: Check Formatting
-        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo fmt --check
-      - name: Run Clippy
-        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo clippy --workspace --all-targets --offline -- -D warnings
-      - name: Supply Chain and License Audit
-        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo deny --offline check bans licenses sources
+      - name: Formatting, Clippy, supply chain, and repository policy
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools quality all
 
   test-and-coverage:
     name: Hermetic Tests & Line Coverage
@@ -41,11 +37,11 @@ jobs:
       - name: Restore reviewed developer tooling from CAS
         run: bash scripts/restore.sh
       - name: Run Nextest Suite
-        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo nextest run --workspace --offline
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools test nextest
       - name: Run BDD and Property Tests
-        run: .pixi/tools/linux-64/pixi run --as-is --offline cargo test --workspace --offline
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools test bdd
       - name: Generate Code Coverage Report
-        run: .pixi/tools/linux-64/pixi run --as-is --offline sh scripts/coverage.sh
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools test coverage
       - name: Upload to Codecov
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         with:
@@ -71,20 +67,7 @@ jobs:
       - name: Restore reviewed developer tooling from CAS
         run: bash scripts/restore.sh
       - name: Materialize only the selected locked profile
-        shell: bash
-        run: |
-          set -euo pipefail
-          export ISOLOCK_TEST_PIXI="$PWD/.pixi/tools/linux-64/pixi"
-          export ISOLOCK_TEST_RUST_PREFIX="$PWD/.pixi/envs/default"
-          case "$ISOLOCK_TEST_PROFILE" in
-            rust-pixi) test=real_pixi_restores_the_selected_profile_from_a_cold_offline_cache ;;
-            rust-standalone) test=real_standalone_rust_builds_a_locked_registry_dependency_offline ;;
-            *) exit 2 ;;
-          esac
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline "$test" -- --ignored --nocapture
-          if [ "$ISOLOCK_TEST_PROFILE" = rust-pixi ]; then
-            .pixi/tools/linux-64/pixi run --as-is --offline cargo test --package isolock --test real_profile --offline real_pixi_conda_profile_roundtrips_through_git_storage_and_installs_offline -- --ignored --nocapture
-          fi
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools test profile-materialize
 
   product-acceptance:
     name: CLI, profile, and storage acceptance
@@ -96,10 +79,7 @@ jobs:
       - name: Restore reviewed developer tooling from CAS
         run: bash scripts/restore.sh
       - name: Exercise real-CLI registry and cold-storage journeys
-        run: >-
-          .pixi/tools/linux-64/pixi run --as-is --offline cargo nextest run
-          --package isolock --test cli_test --test epoch_rollover
-          --test ingestion_profiles --offline
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools test acceptance
 
   release-artifact-smoke:
     name: Release artifact smoke / ${{ matrix.platform }}
@@ -130,26 +110,8 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
       - name: Build native release binary
-        run: cargo build --release --locked --package isolock --target ${{ matrix.target }}
+        shell: bash
+        run: sh tools/run release build-binary --target ${{ matrix.target }}
       - name: Package, checksum, extract, and smoke-test the binary
         shell: bash
-        run: |
-          set -euo pipefail
-          host="$(rustc -vV | sed -n 's/^host: //p')"
-          test "$host" = "${{ matrix.target }}" || {
-            echo "runner host $host cannot natively execute ${{ matrix.target }}" >&2
-            exit 1
-          }
-          scratch="$(mktemp -d)"
-          trap 'rm -rf "$scratch"' EXIT
-          mkdir -p "$scratch/stage" "$scratch/extracted"
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$scratch/stage/${{ matrix.binary }}"
-          archive="isolock-${{ matrix.platform }}.tar.gz"
-          (cd "$scratch/stage" && tar -czf "$scratch/$archive" "${{ matrix.binary }}")
-          if command -v sha256sum >/dev/null 2>&1; then
-            (cd "$scratch" && sha256sum "$archive" > SHA256SUMS && sha256sum --check SHA256SUMS)
-          else
-            (cd "$scratch" && shasum -a 256 "$archive" > SHA256SUMS && shasum -a 256 --check SHA256SUMS)
-          fi
-          tar -xzf "$scratch/$archive" -C "$scratch/extracted"
-          sh scripts/release-smoke.sh "$scratch/extracted/${{ matrix.binary }}"
+        run: sh tools/run release host-smoke --platform ${{ matrix.platform }} --target ${{ matrix.target }} --binary ${{ matrix.binary }}

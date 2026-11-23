@@ -1,0 +1,15 @@
+#!/bin/sh
+# Portable entry point: pick the runner's Python and dispatch the tool CLI.
+set -eu
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$root/tools/cli.py" "$@"
+fi
+if command -v python >/dev/null 2>&1; then
+    exec python "$root/tools/cli.py" "$@"
+fi
+if command -v py >/dev/null 2>&1; then
+    exec py -3 "$root/tools/cli.py" "$@"
+fi
+echo 'no python3, python, or py launcher found on PATH' >&2
+exit 127

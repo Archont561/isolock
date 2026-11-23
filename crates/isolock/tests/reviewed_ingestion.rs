@@ -73,6 +73,31 @@ fn success(output: &Output) {
     assert!(output.status.success(), "{output:?}");
 }
 
+/// Assert a workflow step is a single line that runs the expected tools task.
+fn assert_workflow_calls(step: &serde_yaml::Value, task: &str) {
+    let command = step["run"].as_str().expect("workflow step runs a command");
+    assert!(
+        !command.contains('\n'),
+        "workflow step must stay single-line: {command}"
+    );
+    assert!(
+        command.ends_with(&format!(" tools {task}")),
+        "workflow step must delegate to `tools {task}`: {command}"
+    );
+}
+
+/// The workflow steps delegate to `tools/cli.py`; tests execute that same entry point.
+fn tool_command(world: &World, task: &str) -> Command {
+    let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/cli.py");
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let mut command = Command::new(python);
+    command
+        .current_dir(world.temp.path())
+        .arg(tools)
+        .args(["airlock", task]);
+    command
+}
+
 #[given("a reviewed artifact manifest and its original archive")]
 fn reviewed_artifact(world: &World) {
     fs::create_dir(world.temp.path().join("originals")).unwrap();
@@ -765,16 +790,15 @@ fn workflow_dispatch(world: &World, packages: String) {
     let steps = workflow["jobs"]["ingest-dispatch"]["steps"]
         .as_sequence()
         .unwrap();
-    let script = steps
+    let step = steps
         .iter()
         .find(|step| step["name"].as_str() == Some("Ingest and publish the reviewed selection"))
-        .expect("workflow must invoke the implemented reviewed ingestion/publication path")["run"]
-        .as_str()
-        .unwrap();
-    let mut command = Command::new("/bin/bash");
+        .expect("workflow must invoke the implemented reviewed ingestion/publication path");
+    assert_workflow_calls(step, "airlock ingest");
+    let mut command = tool_command(world, "ingest");
     command
         .env_clear()
-        .current_dir(world.temp.path())
+        .env("HOME", world.temp.path().join("empty-home"))
         .env("HOME", world.temp.path().join("empty-home"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env(
@@ -793,8 +817,7 @@ fn workflow_dispatch(world: &World, packages: String) {
         .env("ISOLOCK_BIN", env!("CARGO_BIN_EXE_isolock"))
         .env("ISOLOCK_INGEST_MANIFEST", "reviewed.json")
         .env("ISOLOCK_REGISTRY", "cargo")
-        .env("ISOLOCK_PACKAGES", packages)
-        .args(["-eu", "-c", script]);
+        .env("ISOLOCK_PACKAGES", packages);
     coverage_support::preserve_profile(&mut command);
     *world.output.borrow_mut() = Some(command.output().unwrap());
 }
@@ -977,17 +1000,16 @@ fn audit_published_storage(world: &World) {
     );
     let workflow: serde_yaml::Value =
         serde_yaml::from_str(include_str!("../../../.github/workflows/isolock.yml")).unwrap();
-    let script = workflow["jobs"]["plan-guard"]["steps"]
+    let step = workflow["jobs"]["plan-guard"]["steps"]
         .as_sequence()
         .unwrap()
         .iter()
         .find(|step| step["name"].as_str() == Some("Run Isolock Hermeticity Audit"))
-        .unwrap()["run"]
-        .as_str()
         .unwrap();
+    assert_workflow_calls(step, "airlock audit-snapshot");
     let temporary = world.temp.path().join(".isolock/tmp");
     fs::create_dir_all(&temporary).unwrap();
-    let mut command = Command::new("/bin/bash");
+    let mut command = tool_command(world, "audit-snapshot");
     command
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap())
@@ -995,9 +1017,7 @@ fn audit_published_storage(world: &World) {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("ISOLOCK_BIN", env!("CARGO_BIN_EXE_isolock"))
         .env("ISOLOCK_SNAPSHOT_REF", "refs/remotes/origin/isolock/v1")
-        .env("RUNNER_TEMP", temporary)
-        .current_dir(world.temp.path())
-        .args(["-eu", "-c", script]);
+        .env("RUNNER_TEMP", temporary);
     coverage_support::preserve_profile(&mut command);
     *world.output.borrow_mut() = Some(command.output().unwrap());
 }

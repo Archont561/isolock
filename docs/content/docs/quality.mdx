@@ -9,12 +9,13 @@ Use the restored, locked developer sandbox. The standard command is the same in 
 validation and CI:
 
 ```sh
-pixi run --as-is --offline cargo fmt --check
-pixi run --as-is --offline cargo clippy --workspace --all-targets --offline -- -D warnings
-pixi run --as-is --offline cargo nextest run --workspace --offline
-pixi run --as-is --offline cargo test --workspace --offline
-pixi run --as-is --offline cargo deny --offline check bans licenses sources
+pixi run --as-is --offline tools quality all
+pixi run --as-is --offline tools test nextest
+pixi run --as-is --offline tools test bdd
 ```
+
+`tools quality all` runs `cargo fmt --check`, the blocking Clippy policy,
+`cargo deny check bans licenses sources`, and `alint` in that order.
 
 `Cargo.toml` selects individual lints rather than enabling `clippy::pedantic`,
 `clippy::restriction`, or `clippy::cargo` wholesale.
@@ -40,6 +41,27 @@ helpers can use them too. These attributes live only under `tests/`; they do not
 production. A few end-to-end fixtures have documented, function-local size/complexity
 exceptions to keep setup and lifecycle assertions together. Debug placeholders remain
 forbidden in tests. New exceptions require a narrow scope and a written reason.
+
+## Workflow automation boundary
+
+Workflow YAML stays declarative. Every `run:` step is a single line that delegates to a
+task; multi-line shell or Python logic does not live in `.github/workflows/`. Two layers
+enforce that boundary.
+
+- **Workflow steps.** `.alint/schemas/github-workflow-run-steps.schema.json` requires each
+  `run:` value to be one line matching a tools task, a pixi task, or `scripts/restore.sh`.
+  Step-level logic is rejected even when it is a one-line `run: |` block.
+- **Command implementations.** Everything else lives in `tools/*.py` behind the
+  `pixi run tools` task: `quality` (format, lint, supply chain), `test` (nextest, BDD,
+  coverage, profile materialization), `release` (packaging, verification, prefix.dev
+  publication), `sandbox` (developer sandbox publishing), `airlock` (plan guard and
+  reviewed ingestion), and `docs` (documentation build and Pages availability).
+  `tools/run` is the portable POSIX entry point used on runners that do not restore the
+  pixi sandbox, including native Windows and macOS release builds.
+
+Coverage, acceptance, and ingestion acceptance tests assert the same contract: they read
+the committed workflow YAML, require the `tools` delegation, and then execute the identical
+`tools/cli.py` entry point locally.
 
 ## Archive filename case
 

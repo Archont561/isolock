@@ -372,12 +372,13 @@ fn pull_request_workflow_skips_drift_audit_without_storage_ref() {
         .iter()
         .find(|step| step["id"].as_str() == Some("airlock-storage"))
         .expect("plan guard checks whether storage is initialized");
-    let storage_script = storage_step["run"]
+    let storage_command = storage_step["run"]
         .as_str()
-        .expect("storage check runs a shell script");
-    assert!(storage_script.contains("refs/heads/isolock/v1"));
-    assert!(storage_script.contains("refs/tags/isolock/v1"));
-    assert!(storage_script.contains("available=false"));
+        .expect("storage check calls the repository tool task");
+    assert_eq!(
+        storage_command,
+        ".pixi/tools/linux-64/pixi run --as-is --offline tools airlock storage-ref"
+    );
 
     let audit_step = steps
         .iter()

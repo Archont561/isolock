@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://isolock.local/schemas/github-workflow-run-steps.schema.json",
+  "title": "GitHub Actions Single-Line Run Step Policy",
+  "description": "Every workflow run step must be one line that delegates to the repository tool task, the sandbox restore script, or a pixi task; multi-line shell logic belongs in tools/*.py.",
+  "type": "object",
+  "properties": {
+    "jobs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "run": {
+                  "type": "string",
+                  "pattern": "^(sh tools/run [a-z][^\\n]*|\\.pixi/tools/linux-64/pixi run --as-is --offline tools [a-z][^\\n]*|pixi run --as-is tools [a-z][^\\n]*|bash scripts/restore\\.sh)$"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
