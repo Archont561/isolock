@@ -57,4 +57,4 @@ The `.isolock/isolock.lock` TOML protocol is not implemented.
 
 See [reviewed ingestion and publication](../../docs/content/docs/ingestion.mdx) for the
 input schema, cold-consumer path, profile payload-before-manifest rule, storage budgets,
-and explicit deferred registry-resolution/epoch boundaries.
+and the explicit deferred registry-resolution boundary.

@@ -45,6 +45,7 @@ not direct registry metadata/dependency resolution.
 ## Explicit limits and follow-up
 
 Originals are at most 95 MiB, reviewed/publisher-managed JSON is bounded, and live Git
-snapshot trees are at most 1,500 MiB. Automatic epoch rollover and snapshot migration are
-**not implemented**; see ISO-24. Direct registry resolution, selective Git/HTTP transport,
-connected proxy-miss fetching, and broader native publication coverage remain later slices.
+snapshot trees are at most 1,500 MiB. ISO-24 adds opt-in, reviewed epoch rollover and
+snapshot migration under explicit live/history budgets; archived generations are not
+automatically retired. Direct registry resolution, selective Git/HTTP transport, connected
+proxy-miss fetching, and broader native publication coverage remain later slices.
