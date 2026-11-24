@@ -498,6 +498,14 @@ impl Profile {
             identifier(name)?;
             filename(&tool.filename)?;
             public_source(&tool.source)?;
+            // A digest is the only thing that pins the bytes. One that no content can
+            // produce is a placeholder, and accepting it here would let `config check`
+            // and `plan` pass on a pin that can never resolve.
+            if !tool.digest.is_content_derived() {
+                return Err(format!(
+                    "tool {name} has a placeholder digest that no reviewed artifact can produce"
+                ));
+            }
             if tool.platform != platform
                 || tool.version.is_empty()
                 || !tool

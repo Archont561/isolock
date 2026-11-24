@@ -57,6 +57,16 @@ impl Sha256Digest {
         Ok(Self(s.to_ascii_lowercase()))
     }
 
+    /// Whether this digest could have been produced by hashing real content.
+    ///
+    /// An all-zero digest is the shape a placeholder takes. It is syntactically valid and
+    /// no content produces it, so treating it as a reviewed pin would let validation and
+    /// planning succeed on an artifact that can never resolve.
+    #[must_use]
+    pub fn is_content_derived(&self) -> bool {
+        self.0.bytes().any(|byte| byte != b'0')
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
