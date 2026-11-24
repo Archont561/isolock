@@ -14,6 +14,7 @@ PROFILE_JOURNEYS = {
     ],
     "rust-standalone": [
         "real_standalone_rust_builds_a_locked_registry_dependency_offline",
+        "real_standalone_rust_builds_a_locked_git_dependency_offline",
     ],
 }
 

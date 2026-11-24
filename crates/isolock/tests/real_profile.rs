@@ -436,3 +436,222 @@ fn external_tool(project: &Fixture, path: &Path, filename: &str) -> ToolArtifact
         entry: None,
     }
 }
+
+/// A real offline build of a Cargo git dependency, with its origin deleted.
+///
+/// This is the claim the whole feature exists for: after restoration, the
+/// vendored commit tree must satisfy `cargo build --locked --offline` even when
+/// the repository it came from no longer exists anywhere on disk.
+#[test]
+#[ignore = "requires ISOLOCK_TEST_RUST_PREFIX from the restored developer sandbox"]
+fn real_standalone_rust_builds_a_locked_git_dependency_offline() {
+    let (project, upstream) = git_dependency_project();
+    project.plan("rust-standalone");
+    project.sync("rust-standalone");
+
+    // The origin must be unreachable, or this proves nothing.
+    fs::remove_dir_all(&upstream).unwrap();
+    assert!(!upstream.exists());
+
+    let output = Command::new(project.bin("rust-standalone", "cargo"))
+        .args(["build", "--locked", "--offline"])
+        .current_dir(&project.root)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env(
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+            "/usr/bin/cc",
+        )
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output));
+    let output = Command::new(project.root.join("target/debug/app"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(text(&output).trim(), "42");
+}
+
+/// Builds a restored profile with one real git dependency already ingested.
+#[allow(clippy::too_many_lines)] // A reviewed end-to-end fixture reads as one sequence.
+fn git_dependency_project() -> (Fixture, PathBuf) {
+    assert_eq!(
+        std::env::var("ISOLOCK_TEST_PROFILE").unwrap(),
+        "rust-standalone"
+    );
+    assert_eq!(std::env::var("ISOLOCK_TEST_PLATFORM").unwrap(), PLATFORM);
+    let source = PathBuf::from(std::env::var_os("ISOLOCK_TEST_RUST_PREFIX").unwrap())
+        .canonicalize()
+        .unwrap();
+    let mut project = Fixture::new();
+    let rust = rust_prefix(&project, &source);
+    let isolock = external_tool(
+        &project,
+        Path::new(env!("CARGO_BIN_EXE_isolock")),
+        "isolock",
+    );
+    let profile = project.profiles.get_mut("rust-standalone").unwrap();
+    profile.runtimes.insert("rust".into(), rust);
+    profile.seeds.insert("isolock".into(), isolock);
+    profile.cargo.cargo_version = cargo_version(&source);
+    profile.cargo_git.clear();
+
+    // A real repository holding one crate, pinned to one commit.
+    let upstream = project.temp.path().join("upstream");
+    fs::create_dir_all(upstream.join("src")).unwrap();
+    fs::write(
+        upstream.join("Cargo.toml"),
+        "[package]\nname = \"gitdep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        upstream.join("src/lib.rs"),
+        "pub fn answer() -> u32 { 42 }\n",
+    )
+    .unwrap();
+    git(&upstream, &["init", "--quiet", "."]);
+    git(&upstream, &["add", "-A"]);
+    // The sandbox has no configured identity, and a commit needs one.
+    git(
+        &upstream,
+        &[
+            "-c",
+            "user.email=reviewed@example.test",
+            "-c",
+            "user.name=reviewed",
+            "commit",
+            "--quiet",
+            "-m",
+            "one",
+        ],
+    );
+    let commit = String::from_utf8(git(&upstream, &["rev-parse", "HEAD"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+    let repository = format!("file://{}", upstream.to_str().unwrap());
+
+    // The lockfile and manifest name that repository and commit.
+    fs::write(
+        project.root.join("Cargo.lock"),
+        format!(
+            "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"gitdep\"]\n\n[[package]]\nname = \"gitdep\"\nversion = \"0.1.0\"\nsource = \"git+{repository}?rev={commit}#{commit}\"\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngitdep = {{ git = \"{repository}\", rev = \"{commit}\" }}\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("src/main.rs"),
+        "fn main() { println!(\"{}\", gitdep::answer()); }\n",
+    )
+    .unwrap();
+
+    // The reviewed pin is the digest of `git archive` for that commit.
+    let archive = project.temp.path().join("exported.tar");
+    assert!(Command::new("git")
+        .args([
+            "-C",
+            upstream.to_str().unwrap(),
+            "archive",
+            "--format=tar",
+            "--output",
+            archive.to_str().unwrap(),
+            &commit,
+        ])
+        .status()
+        .unwrap()
+        .success());
+    let digest = digest_file(&archive).unwrap();
+    project
+        .profiles
+        .get_mut("rust-standalone")
+        .unwrap()
+        .cargo_git = vec![isolock_plan::profile::CargoGitPin {
+        name: "gitdep".into(),
+        version: "0.1.0".into(),
+        repository: repository.clone(),
+        commit: commit.clone(),
+        digest: digest.clone(),
+    }];
+
+    // Ingest the pinned commit, exactly as a reviewed workflow would.
+    fs::write(
+        project.root.join("isolock.ingest.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schema-version": 1,
+            "artifacts": [{
+                "registry": "cargo",
+                "name": "gitdep",
+                "version": "0.1.0",
+                "sha256": digest,
+                "filename": "gitdep-git.tar",
+                "source": repository,
+                "git": {
+                    "repository": repository,
+                    "revision": commit,
+                    "commit": commit
+                }
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::create_dir_all(project.root.join("originals")).unwrap();
+    project.write_config(None);
+    project.success(&[
+        "ingest",
+        "--manifest",
+        "isolock.ingest.json",
+        "--artifacts",
+        "originals",
+    ]);
+
+    (project, upstream)
+}
+
+/// Packs the restored Rust prefix into a reviewed runtime artifact.
+fn rust_prefix(project: &Fixture, source: &Path) -> ToolArtifact {
+    let archive = project.temp.path().join("rust-prefix.tar");
+    let mut tar = Command::new("tar");
+    tar.args(["--dereference", "--hard-dereference", "-cf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(source)
+        .args(["bin/cargo", "bin/rustc", "lib/rustlib"]);
+    for entry in fs::read_dir(source.join("lib")).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_str().unwrap();
+        if name.starts_with("librustc_driver")
+            || name.starts_with("libLLVM")
+            || name.starts_with("libgcc_s.so")
+            || name.starts_with("libz.so")
+        {
+            tar.arg(format!("lib/{name}"));
+        }
+    }
+    assert!(tar.status().unwrap().success());
+    let mut rust = external_tool(project, &archive, "rust-prefix.tar");
+    rust.format = ArchiveFormat::Tar;
+    rust
+}
+
+/// The exact Cargo version the profile must record, to match the restored toolchain.
+fn cargo_version(source: &Path) -> String {
+    let version = Command::new(source.join("bin/cargo"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    String::from_utf8(version.stdout)
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .into()
+}
