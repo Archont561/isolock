@@ -17,7 +17,64 @@ isolock exec --profile rust-standalone --platform linux-64 -- cargo add serde
 The profile must already be materialized. If it is not, `exec` fails closed and asks for
 `isolock sync`; it never falls back to the host toolchain. Seeds and runtimes are toolchain
 prefixes, not packages, so the proxy serves only registry artifacts (Conda, Cargo registry,
-wheels, npm), which is what `cargo add` and `pixi add` request.
+wheels, npm).
+
+### Package managers resolve from the reviewed snapshot
+
+`cargo add` and `pixi add` work inside a profile session, and both resolve only from
+reviewed bytes. They succeed with no network and fail cleanly on anything unreviewed.
+
+For Cargo, the projection is a **vendored directory source**, not the proxy. The profile's
+`cargo-home/config.toml` replaces `crates-io` with `isolock-vendor`, a `directory` source
+over the sealed payload:
+
+```toml
+[source.crates-io]
+replace-with = "isolock-vendor"
+[source.isolock-vendor]
+directory = "<root>/.isolock/vendor/cargo/<key>"
+[net]
+offline = true
+```
+
+A source replacement outranks `CARGO_REGISTRIES_CRATES_IO_INDEX`, so Cargo answers from
+disk. That is deliberate: a directory source cannot reach the network at all, so offline
+mode costs nothing. A crate must be in the reviewed lock to be vendored, so the adoption
+journey is "lock it, then promote it". A crate present in `Cargo.lock` but absent from
+`[dependencies]` is added without any resolution:
+
+```console
+$ isolock exec --profile rust-standalone --platform linux-64 -- cargo add hello
+      Adding hello v1.0.0 to dependencies
+```
+
+Anything absent from the snapshot is a miss, never an upstream fetch, and the manifest is
+left unchanged:
+
+```console
+$ isolock exec --profile rust-standalone --platform linux-64 -- cargo add definitely-not-reviewed
+error: the crate `definitely-not-reviewed` could not be found in registry index.
+```
+
+For Conda, `exec` exposes a channel generated from the manifest and redirects the common
+upstream hosts to it, so `pixi add` solves against reviewed packages:
+
+```console
+$ isolock exec --profile rust-pixi --platform linux-64 -- pixi add rust==1.0.0
+Added rust==1.0.0
+```
+
+An unreviewed name or version fails to solve rather than reaching an upstream channel:
+
+```console
+$ isolock exec --profile rust-pixi --platform linux-64 -- pixi add rust==2.0.0
+Error:   x failed to solve requirements of environment 'default' for platform 'linux-64'
+...
+  | Cannot solve the request because of: No candidates were found for rust==2.0.0.
+```
+
+These four journeys are covered by ignored integration tests in
+`crates/isolock/tests/real_profile.rs`, which run against a real restored toolchain.
 
 ## Run an existing airlock plan
 
