@@ -5,10 +5,12 @@ use crate::application::ports::{
 };
 use crate::domain::{DomainError, Settings};
 use crate::infrastructure::ingestion;
+use crate::infrastructure::process::SystemProcesses;
 use std::path::{Path, PathBuf};
 
 /// Reviewed ingestion and publication bound to one project root and its settings.
 pub struct ReviewedIngestion {
+    processes: Box<dyn crate::application::ports::ProcessRunner>,
     root: PathBuf,
     settings: Settings,
     workspace: WorkspaceSelection,
@@ -19,6 +21,7 @@ impl ReviewedIngestion {
     #[must_use]
     pub fn new(root: &Path, settings: &Settings, workspace: WorkspaceSelection) -> Self {
         Self {
+            processes: Box::new(SystemProcesses::new()),
             root: root.into(),
             settings: settings.clone(),
             workspace,
@@ -35,6 +38,7 @@ impl Ingestion for ReviewedIngestion {
         download: bool,
     ) -> UseCaseResult<String> {
         ingestion::ingest(ingestion::Import {
+            processes: self.processes.as_ref(),
             root: &self.root,
             settings: &self.settings,
             manifest,
@@ -50,6 +54,7 @@ impl Ingestion for ReviewedIngestion {
 
     fn publish(&self, request: Publication<'_>) -> UseCaseResult<String> {
         ingestion::publish(ingestion::Publication {
+            processes: self.processes.as_ref(),
             root: &self.root,
             settings: &self.settings,
             workspace: &self.workspace,

@@ -1,7 +1,7 @@
 //! `exec` and `serve`: the two workflows that own a live loopback interceptor.
 
 use crate::application::ports::{
-    ChildCommand, Listener, Progress, ProxyRuntime, ProxySession, UseCaseResult,
+    ChildCommand, ChildOutcome, Listener, Progress, ProxyRuntime, ProxySession, UseCaseResult,
 };
 use std::process::ExitCode;
 
@@ -10,6 +10,8 @@ use std::process::ExitCode;
 pub struct ExecOutcome {
     /// The child's exact status, which becomes the process status.
     pub status: ExitCode,
+    /// How the child finished, retained for callers that need code and signal apart.
+    pub outcome: ChildOutcome,
     /// A shutdown failure the caller must surface on stderr without changing the status.
     pub shutdown_warning: Option<ShutdownWarning>,
 }
@@ -40,14 +42,31 @@ pub fn exec_child<R: ProxyRuntime>(
 ) -> UseCaseResult<ExecOutcome> {
     let command = ChildCommand::from_arguments(arguments)?;
     let session = runtime.start()?;
-    let status = session.run(&command)?;
+    let outcome = session.run(&command)?;
     let shutdown_warning = session.close().err().map(|error| ShutdownWarning {
         message: error.to_string(),
     });
     Ok(ExecOutcome {
-        status,
+        status: exit_status(outcome),
+        outcome,
         shutdown_warning,
     })
+}
+
+/// Projects a described child outcome onto the process exit code.
+///
+/// A normal exit keeps its own code, a signalled child follows the shell
+/// convention of `128 + signal`, and anything unrepresentable becomes failure.
+fn exit_status(outcome: ChildOutcome) -> ExitCode {
+    outcome
+        .code
+        .and_then(|code| u8::try_from(code).ok())
+        .or_else(|| {
+            outcome
+                .signal
+                .and_then(|signal| u8::try_from(128 + signal).ok())
+        })
+        .map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
 /// Serves the locked registry snapshot on loopback until interrupted.
@@ -76,14 +95,37 @@ mod tests {
         fail_start: bool,
     }
 
+    /// Recovers the numeric code from an `ExitCode` for fixture construction.
+    fn exit_code(code: ExitCode) -> u8 {
+        match code {
+            ExitCode::SUCCESS => 0,
+            ExitCode::FAILURE => 1,
+            other => {
+                // Every other value in this suite is a small literal.
+                let mut code = 0_u8;
+                for candidate in 0..=255_u8 {
+                    if ExitCode::from(candidate) == other {
+                        code = candidate;
+                        break;
+                    }
+                }
+                assert_ne!(code, 0);
+                code
+            }
+        }
+    }
+
     struct FakeSession {
         status: ExitCode,
         shutdown: Option<&'static str>,
     }
 
     impl Session for FakeSession {
-        fn run(&self, _command: &ChildCommand) -> UseCaseResult<ExitCode> {
-            Ok(self.status)
+        fn run(&self, _command: &ChildCommand) -> UseCaseResult<ChildOutcome> {
+            Ok(ChildOutcome {
+                code: Some(i32::from(exit_code(self.status))),
+                signal: None,
+            })
         }
 
         fn close(self) -> UseCaseResult<()> {

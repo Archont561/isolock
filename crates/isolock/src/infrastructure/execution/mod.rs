@@ -2,11 +2,12 @@
 
 mod cargo;
 mod environment;
-pub mod exit;
 pub mod inputs;
 mod pixi;
 
 use crate::application::ports::{ChildCommand, SessionSettings};
+use crate::application::ports::{ChildOutcome, ProcessRequest, ProcessRunner};
+use crate::infrastructure::process::SystemProcesses;
 use cargo::CargoConfigError;
 use environment::{
     CargoEnvironment, ChildEnvironment, NpmEnvironment, PixiEnvironment, ProxyEnvironment,
@@ -17,7 +18,6 @@ use pixi::{PixiConfig, PixiConfigError};
 use std::error::Error;
 use std::fmt;
 use std::io;
-use std::process::{Command, ExitStatus};
 
 #[derive(Debug)]
 pub enum SessionError {
@@ -51,6 +51,7 @@ impl Error for SessionError {
 
 pub struct ExecutionSession {
     // Field drop order stops the proxy before removing the temporary Pixi file.
+    processes: SystemProcesses,
     proxy: Option<ProxyHandle>,
     pixi: Option<PixiConfig>,
     environment: ChildEnvironment,
@@ -65,6 +66,7 @@ impl ExecutionSession {
         let origin = proxy.base_url();
         // Establish the session owner before any later setup can fail.
         let mut session = Self {
+            processes: SystemProcesses::new(),
             proxy: Some(proxy),
             pixi: None,
             environment: ChildEnvironment::default(),
@@ -94,13 +96,22 @@ impl ExecutionSession {
         Ok(session)
     }
 
-    pub fn run(&self, command: &ChildCommand) -> Result<ExitStatus, SessionError> {
-        let mut child = Command::new(&command.program);
-        child.args(&command.arguments);
-        self.environment.apply(&mut child);
-        child.status().map_err(|source| SessionError::Child {
-            program: command.program.clone(),
-            source,
+    pub fn run(&self, command: &ChildCommand) -> Result<ChildOutcome, SessionError> {
+        // Run without capturing either stream, so the child's own output reaches the
+        // operator exactly as if it had been invoked directly.
+        let request = self.environment.project(
+            ProcessRequest::new(&command.program).arguments(command.arguments.iter().cloned()),
+        );
+        let output = self
+            .processes
+            .run_inheriting_output(&request)
+            .map_err(|failure| SessionError::Child {
+                program: command.program.clone(),
+                source: io::Error::other(failure.message),
+            })?;
+        Ok(ChildOutcome {
+            code: output.code,
+            signal: output.signal,
         })
     }
 

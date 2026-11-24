@@ -1,6 +1,7 @@
 //! Versioned seed ownership; convenience links never select a locked provider.
 
 use super::{archive, payloads};
+use crate::application::ports::ProcessRunner;
 use crate::infrastructure::profile_store::{self, Workspace};
 use isolock_cas::digest_file;
 use isolock_plan::profile::{ArchiveFormat, Artifact, ArtifactKind, ProfileManifest};
@@ -10,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub fn provision(
+    processes: &dyn ProcessRunner,
     workspace: &Workspace,
     manifest: &ProfileManifest,
 ) -> Result<BTreeMap<String, PathBuf>, String> {
@@ -24,7 +26,7 @@ pub fn provision(
             .join(".isolock/bin/.seeds")
             .join(artifact.digest.as_str())
             .join(&artifact.name);
-        let source = seed_source(workspace, artifact)?;
+        let source = seed_source(processes, workspace, artifact)?;
         if destination.exists() {
             if digest_file(&destination).map_err(|error| error.to_string())?
                 != digest_file(&source.1).map_err(|error| error.to_string())?
@@ -54,6 +56,7 @@ pub fn provision(
 }
 
 fn seed_source(
+    processes: &dyn ProcessRunner,
     workspace: &Workspace,
     artifact: &Artifact,
 ) -> Result<(tempfile::TempDir, PathBuf), String> {
@@ -73,7 +76,7 @@ fn seed_source(
         }
         path
     } else {
-        archive::unpack(&workspace.cas, artifact, directory.path())?;
+        archive::unpack(processes, &workspace.cas, artifact, directory.path())?;
         let entry = artifact
             .metadata
             .get("entry")

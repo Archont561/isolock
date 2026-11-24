@@ -1,13 +1,14 @@
 //! Publish an existing verified profile export, pinned to an earlier payload commit.
 
 use super::git::Publisher;
-use crate::application::ports::ProfileSnapshot;
+use crate::application::ports::{ProcessRunner, ProfileSnapshot};
 use crate::infrastructure::profile_store;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub fn publish_profile(
+    processes: &dyn ProcessRunner,
     root: &Path,
     snapshot_runner: &dyn ProfileSnapshot,
     reference: &str,
@@ -41,7 +42,7 @@ pub fn publish_profile(
         .repository
         .as_deref()
         .ok_or("profile has no locked storage source")?;
-    let mut publisher = Publisher::open(root, remote, reference)?;
+    let mut publisher = Publisher::open(processes, root, remote, reference)?;
     super::epoch::review(&mut publisher, None, None)?;
     publisher.pinned_source(source, commit)?;
     let files = files(&directory, &directory)?;

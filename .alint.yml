@@ -176,6 +176,16 @@ rules:
     level: error
     message: "Application use cases must not read argv, spawn processes, or resolve the working directory."
 
+  - id: processes-only-in-the-process-adapter
+    kind: import_gate
+    paths: "crates/isolock/src/infrastructure/**/*.rs"
+    language: rust
+    forbid: "^std::process::Command$"
+    allow:
+      - "crates/isolock/src/infrastructure/process.rs"
+    level: error
+    message: "Spawn processes through the ProcessRunner port; only infrastructure/process.rs may construct a std::process::Command."
+
   - id: clifacet-only-in-the-cli-adapter
     kind: import_gate
     paths: "crates/isolock/src/**/*.rs"

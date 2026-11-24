@@ -46,6 +46,24 @@ that claim.
 - **Progress is a port.** `Progress` receives the lines that used to be `println!` calls, so a
   use case can be tested without capturing a process stream.
 
+## Process boundary
+
+Every direct `Command::new` call site now goes through the `ProcessRunner` port:
+`tar` in the archive extractor, `git` in the directory/Git transport and in publication,
+`curl` in reviewed acquisition, `pixi` in the derived Conda install, and the child in
+`isolock exec`. `src/infrastructure/process.rs` is the only module that constructs a
+`std::process::Command`, and the `processes-only-in-the-process-adapter` guardrail keeps it
+that way.
+
+Two details are load-bearing and were preserved deliberately:
+
+- **`isolock exec` inherits streams.** The port separates "discard the child's output" from
+  "let the child write to my terminal." Using the discarding variant for `exec` silently
+  swallowed the child's stdout, which the `clifacet_routing` contract tests caught. The
+  inheriting variant restores the previous behaviour exactly.
+- **Exit codes travel as data.** The port reports `code` and `signal` rather than a
+  platform `ExitStatus`, so `128 + signal` mapping and exact code propagation are unchanged.
+
 ## Intentional behaviour changes
 
 None.

@@ -1,6 +1,7 @@
 //! Verified archive extraction using the same native tar boundary as POSIX bootstrap.
 //! Version one accepts link-free relocatable prefixes and rejects traversal/special files.
 
+use crate::application::ports::{ProcessRequest, ProcessRunner};
 use crate::infrastructure::profile_store;
 use isolock_cas::{digest_file, FileStore, Sha256Digest};
 use isolock_plan::profile::{relative_path, ArchiveFormat, Artifact};
@@ -8,9 +9,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-pub fn unpack(cas: &FileStore, artifact: &Artifact, target: &Path) -> Result<(), String> {
+pub fn unpack(
+    processes: &dyn ProcessRunner,
+    cas: &FileStore,
+    artifact: &Artifact,
+    target: &Path,
+) -> Result<(), String> {
     if !cas
         .verified(&artifact.digest)
         .map_err(|error| error.to_string())?
@@ -23,19 +28,20 @@ pub fn unpack(cas: &FileStore, artifact: &Artifact, target: &Path) -> Result<(),
     if digest_file(private.path()).map_err(|error| error.to_string())? != artifact.digest {
         return Err("archive changed while copying".into());
     }
-    inspect(private.path())?;
+    inspect(processes, private.path())?;
     fs::create_dir_all(target).map_err(|error| error.to_string())?;
-    let status = Command::new("tar")
-        .env_remove("TAR_OPTIONS")
-        .env_remove("GZIP")
-        .arg("-xf")
-        .arg(private.path())
-        .arg("-C")
-        .arg(target)
-        .arg("--no-same-owner")
-        .output()
+    let extracted = processes
+        .run(
+            &ProcessRequest::new("tar")
+                .without_variables(["TAR_OPTIONS", "GZIP"])
+                .arguments(["-xf"])
+                .argument(private.path().to_string_lossy())
+                .argument("-C")
+                .argument(target.to_string_lossy())
+                .argument("--no-same-owner"),
+        )
         .map_err(|_| "cannot start tar")?;
-    if !status.status.success() {
+    if !extracted.success {
         return Err("cannot extract verified archive".into());
     }
     // Defense in depth: do not publish a tree containing links or special filesystem nodes.
@@ -44,16 +50,17 @@ pub fn unpack(cas: &FileStore, artifact: &Artifact, target: &Path) -> Result<(),
     Ok(())
 }
 
-fn inspect(path: &Path) -> Result<(), String> {
+fn inspect(processes: &dyn ProcessRunner, path: &Path) -> Result<(), String> {
     for verbose in [false, true] {
-        let output = Command::new("tar")
-            .env_remove("TAR_OPTIONS")
-            .env_remove("GZIP")
-            .arg(if verbose { "-tvf" } else { "-tf" })
-            .arg(path)
-            .output()
+        let output = processes
+            .run(
+                &ProcessRequest::new("tar")
+                    .without_variables(["TAR_OPTIONS", "GZIP"])
+                    .argument(if verbose { "-tvf" } else { "-tf" })
+                    .argument(path.to_string_lossy()),
+            )
             .map_err(|_| "cannot inspect archive")?;
-        if !output.status.success() {
+        if !output.success {
             return Err("invalid archive".into());
         }
         let listing =

@@ -1,7 +1,6 @@
 //! Starting an interceptor and running a child under it.
 
 use super::UseCaseResult;
-use std::process::ExitCode;
 
 /// A child command and its opaque argument tail, exactly as the operator typed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,13 +62,22 @@ pub trait Listener {
     fn serve(self) -> UseCaseResult<()>;
 }
 
+/// How a child finished, described without a platform-specific status type.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChildOutcome {
+    /// The exit code when the child exited normally.
+    pub code: Option<i32>,
+    /// The terminating signal on Unix, when the child did not exit normally.
+    pub signal: Option<i32>,
+}
+
 /// One live execution session.
 pub trait Session {
-    /// Runs the child and returns its exact status.
+    /// Runs the child and returns how it finished.
     ///
     /// # Errors
     /// Returns a [`crate::domain::DomainError`] when the child cannot be spawned or waited on.
-    fn run(&self, command: &ChildCommand) -> UseCaseResult<ExitCode>;
+    fn run(&self, command: &ChildCommand) -> UseCaseResult<ChildOutcome>;
 
     /// Shuts the proxy down, reporting any failure for the caller to surface on stderr.
     ///

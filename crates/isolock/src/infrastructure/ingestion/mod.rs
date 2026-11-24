@@ -12,6 +12,7 @@ mod roots;
 pub use publish::{publish, Publication};
 pub use roots::roots;
 
+use crate::application::ports::ProcessRunner;
 use crate::domain::Settings;
 use crate::infrastructure::profile_store::{self, StoreLease, Workspace};
 use manifest::Manifest;
@@ -25,6 +26,8 @@ pub struct Selection<'a> {
 
 /// One reviewed import request.
 pub struct Import<'a> {
+    /// The process boundary used for explicit HTTPS acquisition.
+    pub processes: &'a dyn ProcessRunner,
     /// Project root every relative path resolves against.
     pub root: &'a Path,
     /// Validated settings describing the target CAS.
@@ -41,6 +44,7 @@ pub struct Import<'a> {
 
 pub fn ingest(request: Import<'_>) -> Result<String, String> {
     let Import {
+        processes,
         root,
         settings,
         manifest,
@@ -51,7 +55,7 @@ pub fn ingest(request: Import<'_>) -> Result<String, String> {
     let manifest =
         Manifest::read(&root.join(manifest))?.select(selection.registry, selection.packages)?;
     // Verify the whole selected batch before changing the configured CAS.
-    let staged = acquire::stage(&manifest, &root.join(artifacts), download)?;
+    let staged = acquire::stage(processes, &manifest, &root.join(artifacts), download)?;
     let workspace = Workspace::new(root, settings);
     let _lease = StoreLease::acquire(&workspace)?;
     // Preflight all cache hits as well: never repair an existing corrupt blob.

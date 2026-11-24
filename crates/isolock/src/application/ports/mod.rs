@@ -4,10 +4,13 @@
 //! supplies the reviewed implementations, without the use case changing.
 
 mod config_provider;
+#[cfg(test)]
+pub mod fakes;
 mod garbage_collector;
 mod ingestion;
 mod legacy_plan;
 mod materializer;
+mod process;
 mod profile_store;
 mod progress;
 mod proxy_runtime;
@@ -21,11 +24,14 @@ pub use garbage_collector::{CollectionReport, GarbageCollector};
 pub use ingestion::{Ingestion, ProfileSnapshot, Publication, Selection};
 pub use legacy_plan::{DriftState, LegacyPlan};
 pub use materializer::Materializer;
+pub use process::{ProcessFailure, ProcessOutput, ProcessRequest, ProcessRunner};
 pub use profile_store::{LockGuard, PlanStore, ProfileGraph};
 pub use progress::Progress;
 #[cfg(test)]
 pub use progress::Recorded;
-pub use proxy_runtime::{ChildCommand, Listener, ProxyRuntime, Session as ProxySession};
+pub use proxy_runtime::{
+    ChildCommand, ChildOutcome, Listener, ProxyRuntime, Session as ProxySession,
+};
 pub use transport::{ArtifactTransport, BlobStore, SourceSnapshot};
 
 use crate::domain::DomainError;

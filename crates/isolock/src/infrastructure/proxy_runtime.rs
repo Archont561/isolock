@@ -1,12 +1,12 @@
 //! The loopback interceptor and child process adapter behind the [`ProxyRuntime`] port.
 
 use crate::application::ports::{
-    ChildCommand, Listener, ProxyRuntime, ProxySession, SessionSettings, UseCaseResult,
+    ChildCommand, ChildOutcome, Listener, ProxyRuntime, ProxySession, SessionSettings,
+    UseCaseResult,
 };
 use crate::domain::DomainError;
-use crate::infrastructure::execution::{exit, inputs, ExecutionSession};
+use crate::infrastructure::execution::{inputs, ExecutionSession};
 use isolock_proxy::ProxyServer;
-use std::process::ExitCode;
 
 /// Projects already-loaded configuration into the proxy runtime.
 pub struct LoopbackProxy {
@@ -66,10 +66,9 @@ impl Listener for BoundListener {
 pub struct ChildSession(ExecutionSession);
 
 impl ProxySession for ChildSession {
-    fn run(&self, command: &ChildCommand) -> UseCaseResult<ExitCode> {
+    fn run(&self, command: &ChildCommand) -> UseCaseResult<ChildOutcome> {
         self.0
             .run(command)
-            .map(exit::map_status)
             .map_err(|error| DomainError::new(error.to_string()))
     }
 
