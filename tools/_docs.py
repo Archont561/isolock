@@ -24,6 +24,17 @@ def build(_: argparse.Namespace) -> None:
     run(["bun", "run", "build"], cwd=DOCS)
 
 
+def verify(_: argparse.Namespace) -> None:
+    """Build the docs from a frozen lockfile, as the PR gate requires.
+
+    The Pages workflow deploys from `main` only, so without this a broken MDX
+    file reaches `main` before anything compiles it. Rendering the export here
+    catches it on the pull request instead.
+    """
+    run(["bun", "install", "--frozen-lockfile"], cwd=DOCS)
+    run(["bun", "run", "build"], cwd=DOCS)
+
+
 def _summary(note: str) -> None:
     target = os.environ.get("GITHUB_STEP_SUMMARY")
     if target:
@@ -101,6 +112,9 @@ def register(groups: argparse._SubParsersAction) -> None:
         handler=install
     )
     commands.add_parser("build", help="Build the static Fumadocs export.").set_defaults(handler=build)
+    commands.add_parser(
+        "verify", help="Install frozen docs dependencies and build, as the PR gate does."
+    ).set_defaults(handler=verify)
     commands.add_parser("pages-status", help="Decide whether Pages can deploy.").set_defaults(
         handler=pages_status
     )

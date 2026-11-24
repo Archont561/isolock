@@ -89,3 +89,55 @@ fn release_check_tag_stays_silent_during_a_rehearsal() {
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("rehearsal"));
 }
+
+#[test]
+fn docs_verify_installs_from_the_lockfile_before_building() {
+    let temp = tempfile::tempdir().unwrap();
+    let tools = temp.path().join("fake-tools");
+    fs::create_dir_all(&tools).unwrap();
+    let log = tools.join("calls.txt");
+    let script = format!(
+        "#!/bin/sh\nset -eu\nprintf 'args=%s\\n' \"$*\" >> '{}'\n",
+        log.display()
+    );
+    let bun = tools.join("bun");
+    fs::write(&bun, script).unwrap();
+    fs::set_permissions(&bun, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new("python3")
+        .arg("-B")
+        .arg(tools_cli())
+        .args(["docs", "verify"])
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", tools.display()))
+        .env("HOME", temp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+
+    // The gate must build from the reviewed lockfile, never a fresh resolution.
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(
+        calls.contains("args=install --frozen-lockfile"),
+        "the PR gate must install from the frozen lockfile: {calls}"
+    );
+    assert!(calls.contains("args=run build"), "{calls}");
+}
+
+#[test]
+fn the_pull_request_pipeline_builds_the_documentation() {
+    // The Pages workflow deploys from `main` only, so the PR pipeline is the
+    // only place a broken MDX file can be caught before merge.
+    let workflow = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/ci.yml"),
+    )
+    .unwrap();
+    assert!(
+        workflow.contains("pull_request:"),
+        "the docs gate must run on pull requests"
+    );
+    assert!(
+        workflow.contains("sh tools/run docs verify"),
+        "the CI workflow must run the documentation build"
+    );
+}
