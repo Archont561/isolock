@@ -21,7 +21,7 @@ backlog/
 │   ├── m-8 - m8-—-0.1-release-validation-and-product-acceptance.md
 │   └── m-9 - m9-—-adoption-ergonomics-and-remaining-git-dependency-gaps.md
 ├── tasks/                     # Task files tracking work items
-│   └── iso-1 through iso-35
+│   └── iso-1 through iso-36
 ├── docs/                      # Architectural documentation
 │   └── doc-1 through doc-9
 ├── decisions/                 # Architecture Decision Records (ADRs)
@@ -44,7 +44,7 @@ backlog/
 | **m-6** | Code Quality and Proxy Resilience | `ISO-19` through `ISO-22` | Complete |
 | **m-7** | Reviewed Ingestion and Storage Publication | `ISO-23`, `ISO-24` | Complete |
 | **m-8** | 0.1 Release Validation and Product Acceptance | `ISO-25` through `ISO-29` | In Progress |
-| **m-9** | Adoption Ergonomics and Remaining Git Dependency Gaps | `ISO-30` through `ISO-35` | To Do |
+| **m-9** | Adoption Ergonomics and Remaining Git Dependency Gaps | `ISO-30` through `ISO-36` | In Progress |
 
 Milestone completion refers to its scoped tasks, not every architectural aspiration.
 ISO-23 implements reviewed local/explicit-connected ingestion, linear publication,
