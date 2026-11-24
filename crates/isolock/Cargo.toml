@@ -10,6 +10,10 @@ keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
 
+[lib]
+name = "isolock"
+path = "src/lib.rs"
+
 [[bin]]
 name = "isolock"
 path = "src/main.rs"
