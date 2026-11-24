@@ -23,7 +23,7 @@ use std::process::ExitCode;
 
 fn profile_json() -> isolock_plan::profile::Profile {
     serde_json::from_str(
-        r#"{"platforms":["linux-64"],"compose":[],"seeds":{"isolock":{"version":"0.1.0","platform":"linux-64","digest":"0000000000000000000000000000000000000000000000000000000000000000","filename":"isolock-0.1.0.tar.gz","source":"https://example.invalid/isolock"}},"cargo":{},"environment":null}"#,
+        r#"{"platforms":["linux-64"],"compose":[],"seeds":{"isolock":{"version":"0.1.0","platform":"linux-64","digest":"abababababababababababababababababababababababababababababababab","filename":"isolock-0.1.0.tar.gz","source":"https://example.invalid/isolock"}},"cargo":{},"environment":null}"#,
     )
     .expect("reviewed profile")
 }

@@ -421,3 +421,49 @@ fn local_manifest_selection_needs_no_remote_source() {
     ]);
     assert!(project.bin(RUST_PROFILE, "cargo").is_file());
 }
+
+/// A placeholder digest must not survive validation or planning.
+///
+/// ISO-32. An all-zeros digest is syntactically valid and no content produces it, so
+/// accepting it let `config check` and `plan` both pass on a pin that could only fail
+/// later at `sync`, after the review step that was meant to catch it.
+#[test]
+fn a_placeholder_digest_is_rejected_by_validation_and_planning() {
+    let project = Fixture::new();
+    project.write_config(None);
+    let path = project.root.join("isolock.toml");
+    let placeholder = "0".repeat(64);
+    let config = fs::read_to_string(&path).unwrap();
+    let seed = project
+        .profiles
+        .get(RUST_PROFILE)
+        .unwrap()
+        .seeds
+        .get("isolock")
+        .unwrap()
+        .digest
+        .as_str()
+        .to_owned();
+    assert!(
+        config.contains(&seed),
+        "fixture must contain the reviewed seed digest"
+    );
+    fs::write(&path, config.replace(&seed, &placeholder)).unwrap();
+
+    let check = project.run(&["config", "check"]);
+    assert!(!check.status.success(), "{check:?}");
+    let stderr = text(&check);
+    assert!(stderr.contains("placeholder digest"), "{stderr}");
+    // The message must name the artifact, not just the profile.
+    assert!(stderr.contains("isolock"), "{stderr}");
+
+    let plan = project.run(&["plan", "--profile", RUST_PROFILE, "--platform", PLATFORM]);
+    assert!(!plan.status.success(), "{plan:?}");
+    assert!(
+        !project
+            .root
+            .join(format!(".isolock/plans/{RUST_PROFILE}-{PLATFORM}.lock"))
+            .exists(),
+        "plan wrote a lockfile for a placeholder pin"
+    );
+}
