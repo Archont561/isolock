@@ -151,6 +151,41 @@ rules:
     level: error
     message: "Comments in TOML, YAML, and INI configuration files must be at most one line."
 
+  # The clean-architecture dependency rule, enforced in the blocking quality gate.
+  - id: domain-has-no-adapters
+    kind: import_gate
+    paths: "crates/isolock/src/domain/**/*.rs"
+    language: rust
+    forbid: "^(clifacet|clap|figment|crate::(application|cli|infrastructure))"
+    level: error
+    message: "The domain layer may not import clifacet, clap, figment, or any outer layer."
+
+  - id: application-has-no-clifacet-or-adapters
+    kind: import_gate
+    paths: "crates/isolock/src/application/**/*.rs"
+    language: rust
+    forbid: "^(clifacet|clap|figment|crate::(cli|infrastructure))"
+    level: error
+    message: "Application use cases must depend on ports, never on clifacet, clap, figment, or adapters."
+
+  - id: application-has-no-process-or-output
+    kind: import_gate
+    paths: "crates/isolock/src/application/**/*.rs"
+    language: rust
+    forbid: "^(std::process::Command|std::env::args|std::env::current_dir)"
+    level: error
+    message: "Application use cases must not read argv, spawn processes, or resolve the working directory."
+
+  - id: clifacet-only-in-the-cli-adapter
+    kind: import_gate
+    paths: "crates/isolock/src/**/*.rs"
+    language: rust
+    forbid: "^(clifacet|clap)$"
+    allow:
+      - "crates/isolock/src/cli/**/*.rs"
+    level: error
+    message: "clifacet and clap declarations belong only in the CLI adapter."
+
   - id: workflow-run-steps-are-single-line
     kind: file_content_forbidden
     paths:
