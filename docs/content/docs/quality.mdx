@@ -17,6 +17,16 @@ pixi run --as-is --offline tools test bdd
 `tools quality all` runs `cargo fmt --check`, the blocking Clippy policy,
 `cargo deny check bans licenses sources`, and `alint` in that order.
 
+Documentation is gated separately, because `tools quality all` reads files rather than
+compiling them. `tools docs verify` installs from the frozen `docs/bun.lock` and renders the
+static export, and the `Documentation Build` job runs it on every pull request. The Pages
+deployment only runs on `main`, so without that job a malformed MDX file would reach `main`
+before anything compiled it. Build it locally with:
+
+```sh
+pixi run --as-is --offline tools docs verify
+```
+
 `Cargo.toml` selects individual lints rather than enabling `clippy::pedantic`,
 `clippy::restriction`, or `clippy::cargo` wholesale.
 
