@@ -18,9 +18,10 @@ backlog/
 │   ├── m-5 - m5-—-profiled-environment-materialization-and-configuration.md
 │   ├── m-6 - m6-—-code-quality-and-proxy-resilience.md
 │   ├── m-7 - m7-—-reviewed-ingestion-and-storage-publication.md
-│   └── m-8 - m8-—-0.1-release-validation-and-product-acceptance.md
+│   ├── m-8 - m8-—-0.1-release-validation-and-product-acceptance.md
+│   └── m-9 - m9-—-adoption-ergonomics-and-remaining-git-dependency-gaps.md
 ├── tasks/                     # Task files tracking work items
-│   └── iso-1 through iso-29
+│   └── iso-1 through iso-35
 ├── docs/                      # Architectural documentation
 │   └── doc-1 through doc-9
 ├── decisions/                 # Architecture Decision Records (ADRs)
@@ -43,6 +44,7 @@ backlog/
 | **m-6** | Code Quality and Proxy Resilience | `ISO-19` through `ISO-22` | Complete |
 | **m-7** | Reviewed Ingestion and Storage Publication | `ISO-23`, `ISO-24` | Complete |
 | **m-8** | 0.1 Release Validation and Product Acceptance | `ISO-25` through `ISO-29` | In Progress |
+| **m-9** | Adoption Ergonomics and Remaining Git Dependency Gaps | `ISO-30` through `ISO-35` | To Do |
 
 Milestone completion refers to its scoped tasks, not every architectural aspiration.
 ISO-23 implements reviewed local/explicit-connected ingestion, linear publication,
@@ -52,7 +54,14 @@ adoption. Unsupported legacy/sharded formats receive conversion guidance. Direct
 solving, selective Git/HTTP transport, connected proxy-miss fetching, and broader native
 publication coverage remain deferred.
 
-**Next:** [M8](milestones/m-8%20-%20m8-%E2%80%94-0.1-release-validation-and-product-acceptance.md)
+**Next:** [M9](milestones/m-9%20-%20m9-%E2%80%94-adoption-ergonomics-and-remaining-git-dependency-gaps.md)
+ranks correctness before ergonomics: transitive git dependencies (`ISO-30`), an actionable
+tag/branch rejection (`ISO-31`), sentinel-digest validation (`ISO-32`), and profile-aware
+`exec` (`ISO-33`) all precede the scaffolding that open issue #30 requested (`ISO-34`,
+`ISO-35`). Scaffolding is last because a generator built before its workflow runs would
+template a shape that does not work.
+
+[M8](milestones/m-8%20-%20m8-%E2%80%94-0.1-release-validation-and-product-acceptance.md)
 has passed pre-merge acceptance and a non-publishing, three-platform release rehearsal on
 candidate `0a48e5c82963f4eb5687ae56928668ccb7a585c9`. Final completion is held until the
 change is integrated, the workflow is rerun on the exact merged `main` SHA, and a maintainer
