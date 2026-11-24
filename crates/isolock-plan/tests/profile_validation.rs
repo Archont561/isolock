@@ -176,6 +176,7 @@ fn manifests_validate_schema_storage_destinations_and_derivation_identity() {
                         lock_digest: Sha256Digest::from_bytes(b"lock"),
                         platform: PLATFORM.into(),
                         policy: Default::default(),
+                        git: Vec::new(),
                     },
                 );
             },

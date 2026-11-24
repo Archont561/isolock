@@ -42,6 +42,14 @@ fn cargo_package(
     artifact: &Artifact,
     target: &Path,
 ) -> Result<(), String> {
+    if artifact
+        .metadata
+        .get("origin")
+        .and_then(|value| value.as_str())
+        == Some("git")
+    {
+        return cargo_git_package(processes, workspace, artifact, target);
+    }
     let package = format!("{}-{}", artifact.name, artifact.version);
     relative_path(&package)?;
     let unpacked = tempfile::tempdir().map_err(|error| error.to_string())?;
@@ -69,6 +77,80 @@ fn cargo_package(
         true,
     )?;
     archive::copy_tree(&source, &target.join(package))
+}
+
+/// Read the reviewed name and commit for one git artifact.
+///
+/// Planning records these, so a materialised tree can be described without
+/// re-deriving anything from the lockfile.
+fn git_identity(artifact: &Artifact) -> Result<(&str, &str), String> {
+    let name = artifact
+        .metadata
+        .get("name")
+        .and_then(|value| value.as_str())
+        .ok_or("Cargo git artifact has no reviewed crate name")?;
+    let commit = artifact
+        .metadata
+        .get("revision")
+        .and_then(|value| value.as_str())
+        .ok_or("Cargo git artifact has no reviewed commit")?;
+    Ok((name, commit))
+}
+
+/// Materialises one Cargo git dependency as an exported commit tree.
+///
+/// A commit tree is not a crate: it has no enclosing `name-version` directory. It is
+/// unpacked flat into a directory named after the commit, which Cargo accepts as a
+/// vendored package directory.
+///
+/// Cargo *requires* a `.cargo-checksum.json` in every vendored directory and fails
+/// outright without one, but it does not read or verify `package` for a git source,
+/// and `package` is `null` for git packages in `cargo vendor` output. The `files` map
+/// is written with real per-file digests because leaving it empty measurably removes
+/// Cargo's own accidental-modification check. That check is not a security boundary
+/// — the file's own comment says so, and it fails to read tampered bytes as a
+/// vendored source rather than as the pinned commit. The anchor remains the CAS
+/// digest verified before this runs.
+fn cargo_git_package(
+    processes: &dyn ProcessRunner,
+    workspace: &Workspace,
+    artifact: &Artifact,
+    target: &Path,
+) -> Result<(), String> {
+    let (name, commit) = git_identity(artifact)?;
+    let directory = git_directory(name, commit);
+    relative_path(&directory)?;
+    if target.join(&directory).exists() {
+        return Err("Cargo git dependency directory collision".into());
+    }
+    let unpacked = tempfile::tempdir().map_err(|error| error.to_string())?;
+    archive::unpack(processes, &workspace.cas, artifact, unpacked.path())?;
+    if !unpacked.path().join("Cargo.toml").is_file() {
+        return Err("Cargo git dependency archive must contain its crate root".into());
+    }
+    let files = archive::files(unpacked.path())?
+        .into_iter()
+        .map(|(name, (sha, _))| (name, sha))
+        .collect::<BTreeMap<_, _>>();
+    let checksum = unpacked.path().join(".cargo-checksum.json");
+    if checksum.exists() {
+        fs::remove_file(&checksum).map_err(|error| error.to_string())?;
+    }
+    profile_store::write_json(
+        &checksum,
+        &serde_json::json!({"files": files, "package": serde_json::Value::Null}),
+        true,
+    )?;
+    archive::copy_tree(unpacked.path(), &target.join(directory))
+}
+
+/// The vendored directory name for one git dependency.
+///
+/// Cargo locates a vendored package as `<name>` or `<name>-<version>`. A git pin
+/// adds the commit so two commits of one crate never share a directory, which is
+/// what makes a stale tree detectable rather than silently reused.
+fn git_directory(name: &str, commit: &str) -> String {
+    format!("{name}-{}", &commit[..12.min(commit.len())])
 }
 
 pub fn wheels(
@@ -254,6 +336,67 @@ pub fn quote_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// The `[source]` key Cargo itself uses for a git dependency.
+///
+/// This must be byte-identical to the key in `Cargo.lock`'s `source` field, so it
+/// is built from the same parts the lockfile records: the repository, the reviewed
+/// reference, and the resolved commit.
+fn git_source_key(artifact: &Artifact) -> Result<String, String> {
+    let repository = artifact
+        .metadata
+        .get("repository")
+        .and_then(|value| value.as_str())
+        .ok_or("Cargo git artifact has no reviewed repository")?;
+    let reference = artifact
+        .metadata
+        .get("reference")
+        .and_then(|value| value.as_str())
+        .ok_or("Cargo git artifact has no reviewed reference")?;
+    let commit = artifact
+        .metadata
+        .get("revision")
+        .and_then(|value| value.as_str())
+        .ok_or("Cargo git artifact has no reviewed commit")?;
+    Ok(format!(
+        "git+{}?{reference}#{commit}",
+        repository.trim_end_matches('/')
+    ))
+}
+
+/// The `[source]` stanza that replaces one git dependency with our vendor tree.
+///
+/// A git URL is not a registry, so it must be written as `git`/`rev`. Emitting it
+/// as `registry` — which is what the unscoped branch below would do — is rejected
+/// by Cargo outright.
+fn git_source(artifact: &Artifact) -> Result<toml::Value, String> {
+    let repository = artifact
+        .metadata
+        .get("repository")
+        .and_then(|value| value.as_str())
+        .ok_or("Cargo git artifact has no reviewed repository")?;
+    let reference = artifact
+        .metadata
+        .get("reference")
+        .and_then(|value| value.as_str())
+        .ok_or("Cargo git artifact has no reviewed reference")?;
+    let commit = artifact
+        .metadata
+        .get("revision")
+        .and_then(|value| value.as_str())
+        .ok_or("Cargo git artifact has no reviewed commit")?;
+    let (key, value) = reference
+        .split_once('=')
+        .ok_or("Cargo git artifact reference is malformed")?;
+    if !matches!(key, "rev" | "tag" | "branch") || value != commit && key != "rev" {
+        return Err("Cargo git artifact reference must pin its reviewed commit".into());
+    }
+    Ok(toml::Value::Table(toml::value::Table::from_iter([
+        ("git".into(), repository.into()),
+        (key.into(), value.into()),
+        ("replace-with".into(), "isolock-vendor".into()),
+    ])))
+}
+
 pub fn cargo_config(path: &Path, vendor: &Path, artifacts: &[Artifact]) -> Result<(), String> {
     let mut sources = toml::value::Table::new();
     sources.insert(
@@ -274,6 +417,15 @@ pub fn cargo_config(path: &Path, vendor: &Path, artifacts: &[Artifact]) -> Resul
         .iter()
         .filter(|artifact| artifact.kind == ArtifactKind::Cargo)
     {
+        if artifact
+            .metadata
+            .get("origin")
+            .and_then(|value| value.as_str())
+            == Some("git")
+        {
+            sources.insert(git_source_key(artifact)?, git_source(artifact)?);
+            continue;
+        }
         let registry = artifact
             .source
             .strip_prefix("registry+")
