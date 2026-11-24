@@ -1,7 +1,7 @@
 ---
 id: ISO-33
 title: Make exec profile-aware
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-24 00:00'
 labels: []
@@ -27,7 +27,7 @@ dependency through the verified loopback proxy.
 - [x] #1 `exec` selects a profile and platform (explicitly or by the ambient defaults) and runs the child with that profile's activated PATH, CARGO_HOME, and proxy environment.
 - [x] #2 Behavior with no profile configured is unchanged: the legacy `.isolock/plan.json` path keeps byte-identical output, errors, and exit status.
 - [x] #3 A missing or unmaterialized profile fails closed with guidance to run `sync`, and never silently falls back to the host toolchain.
-- [ ] #4 Prove `cargo add` and `pixi add` work through `exec` against the loopback proxy in a hermetic test, with upstream unreachable.
+- [x] #4 Prove `cargo add` and `pixi add` work through `exec` against the loopback proxy in a hermetic test, with upstream unreachable. (Owned and delivered by ISO-36.)
 - [x] #5 `exec` still preserves the child's exit status and passes its argument tail through unchanged.
 <!-- AC:END -->
 
@@ -39,3 +39,9 @@ failed with `isolock: cannot start "cargo": No such file or directory (os error 
 so the environment contribution exists; what is missing is profile selection and activation.
 This is the capability that gates ISO-34: scaffolding a setup that cannot run its own use
 case would be worse than no scaffolding.
+
+AC #4 was split out to ISO-36 and is now delivered there. Note that Cargo's projection
+turned out to be a vendored `directory` source rather than the loopback proxy, because the
+profile's `cargo-home/config.toml` replaces `crates-io` before the proxy index variable is
+consulted. That is the stronger property: a directory source cannot reach the network, so
+`cargo add` is offline by construction. The proxy still serves pixi/npm/pypi.
