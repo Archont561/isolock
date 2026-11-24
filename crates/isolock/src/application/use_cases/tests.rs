@@ -665,6 +665,7 @@ fn the_session_projection_carries_the_reviewed_defaults() {
         temporary_dir: PathBuf::from("tmp"),
         inherited_no_proxy: String::new(),
         proxy: isolock_proxy::ProxyConfig::default(),
+        profile: None,
     };
     assert!(!session.require_plan);
 }

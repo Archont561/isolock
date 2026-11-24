@@ -3,12 +3,28 @@ title: Proxy execution and resource limits
 description: Configure bounded loopback requests and scoped package-manager execution.
 ---
 
+## Run inside a restored profile
+
+Selecting a profile makes `exec` run the child inside that profile: the verified prefix
+goes first on `PATH`, `CARGO_HOME` points at the profile's own Cargo home, and the proxy
+serves the profile's registry artifacts. Anything the profile restores is preferred over a
+host tool of the same name.
+
+```sh
+isolock exec --profile rust-standalone --platform linux-64 -- cargo add serde
+```
+
+The profile must already be materialized. If it is not, `exec` fails closed and asks for
+`isolock sync`; it never falls back to the host toolchain. Seeds and runtimes are toolchain
+prefixes, not packages, so the proxy serves only registry artifacts (Conda, Cargo registry,
+wheels, npm), which is what `cargo add` and `pixi add` request.
+
 ## Run an existing airlock plan
 
-The loopback proxy consumes a legacy JSON `AirlockPlan`, not a profile manifest. A missing
+With no profile selected the loopback proxy consumes a legacy JSON `AirlockPlan`. A missing
 **default** `.isolock/plan.json` means an empty snapshot for `serve` and `exec`; an explicitly
 configured missing plan fails closed. `isolock plan --ci` still requires an expected plan.
-For profile planning and offline materialization, use the [profile guide](./profiles.mdx).
+That path is unchanged by the profile workflow above.
 
 ```sh
 isolock serve --port 0 --max-concurrency 16

@@ -4,14 +4,15 @@ mod cargo;
 mod environment;
 pub mod inputs;
 mod pixi;
+pub mod profile_session;
 
 use crate::application::ports::{ChildCommand, SessionSettings};
 use crate::application::ports::{ChildOutcome, ProcessRequest, ProcessRunner};
 use crate::infrastructure::process::SystemProcesses;
 use cargo::CargoConfigError;
 use environment::{
-    CargoEnvironment, ChildEnvironment, NpmEnvironment, PixiEnvironment, ProxyEnvironment,
-    PypiEnvironment,
+    CargoEnvironment, ChildEnvironment, NpmEnvironment, PixiEnvironment, ProfileEnvironment,
+    ProxyEnvironment, PypiEnvironment,
 };
 use isolock_proxy::{ProxyHandle, ProxyServer};
 use pixi::{PixiConfig, PixiConfigError};
@@ -59,7 +60,7 @@ pub struct ExecutionSession {
 
 impl ExecutionSession {
     pub fn start(config: &SessionSettings) -> Result<Self, SessionError> {
-        let (plan, cas) = inputs::load(config).map_err(SessionError::Inputs)?;
+        let (plan, cas) = profile_session::load(config).map_err(SessionError::Inputs)?;
         let proxy = ProxyServer::bind(config.proxy.clone(), plan, cas)
             .and_then(ProxyServer::spawn)
             .map_err(SessionError::Proxy)?;
@@ -92,6 +93,13 @@ impl ExecutionSession {
             origin: &origin,
             inherited_no_proxy: &config.inherited_no_proxy,
         });
+        if let Some(profile) = &config.profile {
+            // The verified prefix comes first, so a child resolves the profile's own
+            // toolchain. Nothing below ever falls back to the host's.
+            session.environment.include(&ProfileEnvironment {
+                bin: profile_session::prefix_bin(profile),
+            });
+        }
         session.pixi = Some(pixi);
         Ok(session)
     }
@@ -140,6 +148,7 @@ mod tests {
             temporary_dir: temp.path().into(),
             inherited_no_proxy: String::new(),
             proxy: isolock_proxy::ProxyConfig::default(),
+            profile: None,
         };
         for unwind in [false, true] {
             let session = ExecutionSession::start(&config).unwrap();

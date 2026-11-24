@@ -19,6 +19,19 @@ pub fn load(config: &SessionSettings) -> Result<(AirlockPlan, InMemoryCas), Stri
             ))
         }
     };
+    let cas = cas_from(config, &plan)?;
+    Ok((plan, cas))
+}
+
+/// Loads every blob the given plan names, skipping the ones this CAS does not hold.
+///
+/// A missing blob is not an error: the proxy answers a request for it with a miss, which
+/// is exactly the legacy behaviour and keeps a partial snapshot usable.
+pub fn cas(config: &SessionSettings, plan: &AirlockPlan) -> Result<InMemoryCas, String> {
+    cas_from(config, plan)
+}
+
+fn cas_from(config: &SessionSettings, plan: &AirlockPlan) -> Result<InMemoryCas, String> {
     let mut cas = InMemoryCas::new();
     for artifact in plan.artifacts() {
         let path = config.cas_dir.join(artifact.digest.sharded_path());
@@ -30,5 +43,5 @@ pub fn load(config: &SessionSettings) -> Result<(AirlockPlan, InMemoryCas), Stri
             Err(error) => return Err(format!("cannot read CAS blob {}: {error}", path.display())),
         }
     }
-    Ok((plan, cas))
+    Ok(cas)
 }

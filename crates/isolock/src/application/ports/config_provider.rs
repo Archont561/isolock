@@ -113,6 +113,26 @@ pub struct SessionSettings {
     pub inherited_no_proxy: String,
     /// The resolved proxy configuration.
     pub proxy: isolock_proxy::ProxyConfig,
+    /// A selected profile the session must run inside, when one was chosen.
+    ///
+    /// `None` keeps the legacy airlock-plan behaviour exactly: the plan file is
+    /// read, the caller's `PATH` is inherited, and no prefix is required.
+    pub profile: Option<ProfileSession>,
+}
+
+/// What a session needs to run a child inside a materialized profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileSession {
+    /// The profile name, used in messages.
+    pub profile: String,
+    /// The platform name, used in messages and in the prefix path.
+    pub platform: String,
+    /// The digest-addressed materialized prefix holding `bin/`.
+    pub prefix: std::path::PathBuf,
+    /// The profile's own Cargo home, so `cargo add` writes inside the profile.
+    pub cargo_home: std::path::PathBuf,
+    /// Registry artifacts the proxy may serve, already projected.
+    pub plan: isolock_plan::AirlockPlan,
 }
 
 /// The explicit profile selection a command-line invocation asked for.

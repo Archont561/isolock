@@ -17,7 +17,7 @@ mod proxy_runtime;
 mod transport;
 
 pub use config_provider::{
-    ConfigProvenance, ConfigurationProvider, LayeredOverrides, LoadedConfiguration,
+    ConfigProvenance, ConfigurationProvider, LayeredOverrides, LoadedConfiguration, ProfileSession,
     SessionSettings, WorkspaceSelection,
 };
 pub use garbage_collector::{CollectionReport, GarbageCollector};

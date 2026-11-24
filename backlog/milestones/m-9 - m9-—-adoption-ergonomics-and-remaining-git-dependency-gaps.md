@@ -21,7 +21,7 @@ generator built before the workflow works would template a shape that does not r
   plans, ingests, and builds offline.
 - [ ] A lockfile reference that is not already a full commit produces an actionable error
   that names the `cargo update` remedy, rather than a bare rejection.
-- [ ] A profile-planned repo can run `pixi add` and `cargo add` through `isolock exec`
+- [x] A profile-planned repo can run `pixi add` and `cargo add` through `isolock exec`
   against the loopback proxy.
 - [ ] `isolock init` produces a repo whose generated config validates *and* whose plan is
   not dead on arrival; a placeholder digest is rejected, never silently accepted.
@@ -39,8 +39,8 @@ manifest *template*, but it must never invent a digest or fabricate a pin.
 - **ISO-30**: Transitive Cargo git dependencies - To Do.
 - **ISO-31**: Actionable error for non-commit git lockfile references - To Do.
 - **ISO-32**: Reject sentinel digests in typed configuration - To Do.
-- **ISO-33**: Profile-aware `exec` - To Do.
-- **ISO-34**: `isolock init` minimal-setup scaffolding - To Do (blocked on ISO-33).
+- **ISO-33**: Profile-aware `exec` - Complete.
+- **ISO-34**: `isolock init` minimal-setup scaffolding - To Do.
 - **ISO-35**: Adoption scaffolding guidance - To Do (blocked on ISO-34).
 
 ## Status
