@@ -53,6 +53,9 @@ isolock: refusing to overwrite existing isolock.toml, isolock.ingest.json (pass 
 From there, fill the reviewed fields and run the four steps below. `init` does not generate
 `bootstrap.sh`; `seed-manifest` already derives that from the locked plan.
 
+For the surrounding repository setup, meaning which files to commit, the publish order, and
+a cold consumer restore, see [adopting Isolock](./adoption.mdx).
+
 ## Declare intent
 
 The skeleton below shows a fuller profile. Copy it into `isolock.toml` and replace every

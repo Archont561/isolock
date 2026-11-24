@@ -67,6 +67,9 @@ Neither command resolves a registry. Local ingestion never downloads; the connec
 can explicitly use `--download` for reviewed sources. See [reviewed ingestion and publication](./ingestion.mdx)
 for the JSON schema, storage limits, two-phase profile publication, and cold-consumer restore.
 
+To set a repository up from scratch, including which files to commit and how a consumer
+restores offline, see [adopting Isolock](./adoption.mdx).
+
 ### 4. Bootstrap and Activate a Toolchain
 
 After placing the bootstrap script at `.isolock/bootstrap.sh` and provisioning the manifest and CAS blobs, restore the default environment and source its activation script:
