@@ -30,6 +30,28 @@ pub struct Artifact {
     pub source: String,
     #[serde(default)]
     pub metadata: PlannedArtifactMetadata,
+    /// For a Cargo git dependency, the reviewed commit pin.
+    ///
+    /// Absent for every registry artifact, and serialised only when present so
+    /// existing manifests keep their exact bytes and digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitPin>,
+}
+
+/// The reviewed pin for one Cargo git dependency.
+///
+/// `revision` is what the reviewer wrote and is re-resolved on every ingest;
+/// `commit` is the full commit that revision must resolve to. Requiring both
+/// means a moving tag cannot silently change which tree is ingested.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct GitPin {
+    /// Credential-free `https://` (or `file://` in tests) repository URL.
+    pub repository: String,
+    /// The reviewed revision, as written: a full or abbreviated commit, tag, or branch.
+    pub revision: String,
+    /// The full commit `revision` must resolve to.
+    pub commit: String,
 }
 
 impl Manifest {
@@ -131,6 +153,9 @@ impl Artifact {
         validate_version(&self.version)?;
         filename(&self.filename)?;
         public_source(&self.source)?;
+        if let Some(pin) = &self.git {
+            return self.validate_git(pin);
+        }
         let authority = self
             .source
             .strip_prefix("https://")
@@ -155,6 +180,28 @@ impl Artifact {
         Ok(())
     }
 
+    /// Validates a Cargo git dependency against its reviewed pin.
+    ///
+    /// A git artifact is fetched by `git`, not downloaded by URL, so the
+    /// public-HTTPS download rules do not apply. What must hold instead is that
+    /// the pin is a full lowercase commit, that the filename is derived from the
+    /// crate name so a reviewer can predict it, and that `source` names the same
+    /// repository the pin does.
+    fn validate_git(&self, pin: &GitPin) -> Result<(), String> {
+        if self.registry != "cargo" {
+            return Err("reviewed git pins are only supported for Cargo artifacts".into());
+        }
+        super::git_dependency::validate(&pin.repository, &pin.revision)?;
+        full_commit(&pin.commit)?;
+        if self.filename != format!("{}-git.tar", self.name) {
+            return Err("reviewed Cargo git dependency filename must be its crate name".into());
+        }
+        if self.source != pin.repository {
+            return Err("reviewed Cargo git dependency source must be its repository".into());
+        }
+        Ok(())
+    }
+
     pub fn key(&self) -> Result<Sha256Digest, String> {
         canonical_digest(&(&self.registry, &self.name, &self.version, &self.filename))
     }
@@ -168,6 +215,21 @@ impl Artifact {
             _ => None,
         }
     }
+}
+
+/// Rejects anything that is not already a full lowercase commit SHA.
+///
+/// Revisions may be abbreviated or symbolic; the *pin* may not, because a pin
+/// that has to be resolved to be compared is not a pin.
+pub fn full_commit(value: &str) -> Result<String, String> {
+    if !matches!(value.len(), 40 | 64)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("invalid resolved Git commit".into());
+    }
+    Ok(value.to_owned())
 }
 
 fn validate_name(registry: &str, name: &str) -> Result<(), String> {

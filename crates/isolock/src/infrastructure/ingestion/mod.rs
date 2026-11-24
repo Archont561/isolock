@@ -3,6 +3,7 @@
 mod acquire;
 mod epoch;
 mod git;
+mod git_dependency;
 mod manifest;
 mod profiles;
 mod publish;
