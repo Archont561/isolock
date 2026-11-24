@@ -38,7 +38,7 @@ manifest *template*, but it must never invent a digest or fabricate a pin.
 
 - **ISO-30**: Transitive Cargo git dependencies - To Do.
 - **ISO-31**: Actionable error for non-commit git lockfile references - To Do.
-- **ISO-32**: Reject sentinel digests in typed configuration - To Do.
+- **ISO-32**: Reject sentinel digests in typed configuration - Done.
 - **ISO-33**: Profile-aware `exec` - Done.
 - **ISO-34**: `isolock init` minimal-setup scaffolding - To Do.
 - **ISO-35**: Adoption scaffolding guidance - To Do (blocked on ISO-34).
@@ -56,5 +56,6 @@ is a vendored `directory` source, not a proxy round trip: the profile's
 `cargo-home/config.toml` replaces `crates-io` with `isolock-vendor` before the proxy index
 variable is consulted. That exit criterion is therefore met in the stronger sense, since a
 directory source cannot reach the network at all. `pixi add` does resolve through the
-generated channel. ISO-30 through ISO-32 (git dependency correctness) and ISO-34/ISO-35
-(scaffolding) remain open.
+generated channel. ISO-30 and ISO-31 (git dependency correctness) and ISO-34/ISO-35
+(scaffolding) remain open. ISO-32 landed after them, closing the last validation trap that
+scaffolding would otherwise have emitted.
