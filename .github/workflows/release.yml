@@ -39,11 +39,30 @@ jobs:
         run: .pixi/tools/linux-64/pixi run --as-is --offline tools quality all
       - name: Run unit, BDD, property, and CLI/storage acceptance
         run: .pixi/tools/linux-64/pixi run --as-is --offline tools test all
-      - name: Exercise offline locked-profile journeys
-        run: .pixi/tools/linux-64/pixi run --as-is --offline tools test profile-journeys
+
+  release-profile-acceptance:
+    name: Required release profile ${{ matrix.profile }} / linux-64
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [rust-pixi, rust-standalone]
+    env:
+      ISOLOCK_TEST_PROFILE: ${{ matrix.profile }}
+      ISOLOCK_TEST_PLATFORM: linux-64
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Restore reviewed developer tooling
+        run: bash scripts/restore.sh
+      - name: Exercise the selected offline locked-profile journey
+        run: .pixi/tools/linux-64/pixi run --as-is --offline tools test profile-materialize
 
   build:
-    needs: release-acceptance
+    needs: [release-acceptance, release-profile-acceptance]
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45

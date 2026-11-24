@@ -20,6 +20,11 @@ candidate.
 - [ ] The required CI checks pass on that SHA: quality/security, workspace tests and
   coverage, CLI/profile/storage acceptance, both Linux profile jobs, and native standalone
   release-artifact smoke jobs for Linux x86_64, macOS arm64, and Windows x86_64.
+- [ ] The **Release & Publish** acceptance jobs pass on that SHA. Profile journeys run as
+  separate required jobs (`Required release profile rust-pixi / linux-64` and
+  `rust-standalone / linux-64`), matching CI's split. Do not fold them back into one job:
+  a single runner cannot hold the restored sandbox, the full `target/` tree, and a profile
+  build at once, so the journeys fail on disk exhaustion rather than on product behavior.
 - [ ] The **Release & Publish** workflow is dispatched on that candidate with
   `publish=false`. Its Linux/macOS/Windows binary and Conda-package builds succeed, native
   archive checksums and extracted-binary smoke tests pass, Conda artifact checksums and
