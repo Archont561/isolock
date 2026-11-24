@@ -1,7 +1,7 @@
 ---
 id: ISO-36
 title: Prove cargo add and pixi add through the loopback proxy
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-24 00:00'
 labels: []
