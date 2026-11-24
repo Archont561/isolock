@@ -655,3 +655,228 @@ fn cargo_version(source: &Path) -> String {
         .unwrap()
         .into()
 }
+
+/// A materialized standalone Rust profile whose lock names `hello` but whose manifest
+/// does not depend on it, so `cargo add` is the only thing that can introduce it.
+fn locked_hello_project() -> Fixture {
+    assert_eq!(
+        std::env::var("ISOLOCK_TEST_PROFILE").unwrap(),
+        "rust-standalone"
+    );
+    assert_eq!(std::env::var("ISOLOCK_TEST_PLATFORM").unwrap(), PLATFORM);
+    let source = PathBuf::from(std::env::var_os("ISOLOCK_TEST_RUST_PREFIX").unwrap())
+        .canonicalize()
+        .unwrap();
+    let mut project = Fixture::new();
+    let rust = rust_prefix(&project, &source);
+    let isolock = external_tool(
+        &project,
+        Path::new(env!("CARGO_BIN_EXE_isolock")),
+        "isolock",
+    );
+    let profile = project.profiles.get_mut("rust-standalone").unwrap();
+    profile.runtimes.insert("rust".into(), rust);
+    profile.seeds.insert("isolock".into(), isolock);
+    profile.cargo.cargo_version = cargo_version(&source);
+    // `hello` is reviewed and locked, but is not yet a direct dependency. That is the
+    // adoption workflow: the crate's bytes are sealed into the profile, and `cargo add`
+    // promotes it to `[dependencies]` without resolving anything over the network.
+    fs::write(
+        project.root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+    )
+    .unwrap();
+    // The checksum is the reviewed digest of the sealed crate archive, which is the
+    // same anchor the proxy publisher uses.
+    let checksum = Sha256Digest::from_bytes(project.blobs.get("cargo").unwrap());
+    fs::write(
+        project.root.join("Cargo.lock"),
+        format!(
+            "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"hello\",\n]\n\n[[package]]\nname = \"hello\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{}\"\n",
+            checksum.as_str()
+        ),
+    )
+    .unwrap();
+    fs::write(project.root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    project.write_config(None);
+    project.plan("rust-standalone");
+    project.sync("rust-standalone");
+
+    let vendor = project.root.join(".isolock/vendor/cargo");
+    let sealed = fs::read_dir(&vendor)
+        .unwrap()
+        .flat_map(|key| fs::read_dir(key.unwrap().path()).unwrap())
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        sealed.iter().any(|name| name.starts_with("hello-1.0.0")),
+        "the reviewed crate was not vendored: {sealed:?}"
+    );
+
+    project
+}
+
+/// A real `cargo add` adds a reviewed crate inside a profile session, with no network.
+///
+/// ISO-36 AC #2. The crate is sealed into the profile's vendor payload but is absent
+/// from the locked graph, so only `cargo add` can introduce it. Nothing here is a host
+/// tool and the source is a local directory, so a successful add proves the dependency
+/// came from the reviewed snapshot rather than a host registry.
+#[test]
+#[ignore = "requires ISOLOCK_TEST_RUST_PREFIX from the restored developer sandbox"]
+fn real_cargo_add_adds_a_reviewed_crate_offline() {
+    let project = locked_hello_project();
+
+    let output = Command::new(project.bin("rust-standalone", "cargo"))
+        .args(["add", "hello"])
+        .current_dir(&project.root)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env(
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+            "/usr/bin/cc",
+        )
+        .output()
+        .unwrap();
+    let report = text(&output);
+    assert!(output.status.success(), "cargo add failed:\n{report}");
+    let manifest = fs::read_to_string(project.root.join("Cargo.toml")).unwrap();
+    assert!(
+        manifest.contains("hello"),
+        "cargo add did not record the dependency:\n{manifest}"
+    );
+
+    // AC #4: a crate absent from the reviewed snapshot is a miss, never an upstream
+    // fetch. The source is local, so Cargo reports the index miss instead of dialling
+    // out, and the manifest is left untouched.
+    let miss = Command::new(project.bin("rust-standalone", "cargo"))
+        .args(["add", "definitely-not-reviewed"])
+        .current_dir(&project.root)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env(
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+            "/usr/bin/cc",
+        )
+        .output()
+        .unwrap();
+    let miss = text(&miss);
+    assert!(
+        miss.contains("could not be found in registry index"),
+        "an unreviewed crate was not a clean miss:\n{miss}"
+    );
+    assert!(
+        !miss.contains("spurious network error") && !miss.contains("failed to download"),
+        "an unreviewed crate reached the network:\n{miss}"
+    );
+    let after = fs::read_to_string(project.root.join("Cargo.toml")).unwrap();
+    assert!(
+        !after.contains("definitely-not-reviewed"),
+        "a miss still changed the manifest:\n{after}"
+    );
+}
+
+/// A real `pixi add` resolves a reviewed package from the generated channel.
+///
+/// ISO-36 AC #3. `exec` exposes a Conda channel built from the profile manifest, so a
+/// child `pixi add` must read that channel and record the package without contacting an
+/// upstream channel. The manifest names a package that is already reviewed, because the
+/// channel only ever contains reviewed bytes.
+#[test]
+#[ignore = "requires ISOLOCK_TEST_PIXI from the restored developer sandbox"]
+fn real_pixi_add_resolves_from_the_generated_channel() {
+    assert_eq!(std::env::var("ISOLOCK_TEST_PROFILE").unwrap(), RUST_PROFILE);
+    assert_eq!(std::env::var("ISOLOCK_TEST_PLATFORM").unwrap(), PLATFORM);
+    let pixi_path = PathBuf::from(std::env::var_os("ISOLOCK_TEST_PIXI").unwrap())
+        .canonicalize()
+        .unwrap();
+    let project = real_pixi_project(&pixi_path);
+    project.plan(RUST_PROFILE);
+    project.sync(RUST_PROFILE);
+
+    // A fresh workspace, so pixi is not asked to adopt the relocated environment that
+    // `sync` installed. This is the real `add` journey: an empty manifest plus a resolve.
+    let fresh = project.root.join("fresh");
+    fs::create_dir_all(&fresh).unwrap();
+    fs::write(
+        fresh.join("pixi.toml"),
+        "[workspace]\nname = \"fresh\"\nchannels = [\"https://conda.anaconda.org/conda-forge\"]\nplatforms = [\"linux-64\"]\n",
+    )
+    .unwrap();
+    let output = project
+        .command(&[
+            "exec",
+            "--profile",
+            RUST_PROFILE,
+            "--platform",
+            PLATFORM,
+            "--",
+            "pixi",
+            "add",
+            "rust==1.0.0",
+            "--manifest-path",
+            "fresh/pixi.toml",
+        ])
+        .output()
+        .unwrap();
+    let report = text(&output);
+    let manifest = fs::read_to_string(fresh.join("pixi.toml")).unwrap();
+    assert!(
+        output.status.success(),
+        "pixi add did not resolve from the generated channel:\n{report}"
+    );
+    assert!(
+        manifest.contains("rust"),
+        "pixi add did not record the reviewed package:\n{manifest}"
+    );
+}
+
+/// A `pixi add` for an unreviewed package fails without contacting an upstream channel.
+///
+/// ISO-36 AC #4 for the Conda projection.
+#[test]
+#[ignore = "requires ISOLOCK_TEST_PIXI from the restored developer sandbox"]
+fn real_pixi_add_reports_a_miss_for_an_unreviewed_package() {
+    assert_eq!(std::env::var("ISOLOCK_TEST_PROFILE").unwrap(), RUST_PROFILE);
+    assert_eq!(std::env::var("ISOLOCK_TEST_PLATFORM").unwrap(), PLATFORM);
+    let pixi_path = PathBuf::from(std::env::var_os("ISOLOCK_TEST_PIXI").unwrap())
+        .canonicalize()
+        .unwrap();
+    let project = real_pixi_project(&pixi_path);
+    project.plan(RUST_PROFILE);
+    project.sync(RUST_PROFILE);
+
+    let fresh = project.root.join("fresh");
+    fs::create_dir_all(&fresh).unwrap();
+    fs::write(
+        fresh.join("pixi.toml"),
+        "[workspace]\nname = \"fresh\"\nchannels = [\"https://conda.anaconda.org/conda-forge\"]\nplatforms = [\"linux-64\"]\n",
+    )
+    .unwrap();
+    let output = project
+        .command(&[
+            "exec",
+            "--profile",
+            RUST_PROFILE,
+            "--platform",
+            PLATFORM,
+            "--",
+            "pixi",
+            "add",
+            "definitely-not-reviewed==9.9.9",
+            "--manifest-path",
+            "fresh/pixi.toml",
+        ])
+        .output()
+        .unwrap();
+    let report = text(&output);
+    assert!(
+        !output.status.success(),
+        "an unreviewed Conda package was added:\n{report}"
+    );
+    let manifest = fs::read_to_string(fresh.join("pixi.toml")).unwrap();
+    assert!(
+        !manifest.contains("definitely-not-reviewed"),
+        "a Conda miss still changed the manifest:\n{manifest}"
+    );
+}
