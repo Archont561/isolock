@@ -6,6 +6,7 @@
 pub mod bootstrap;
 pub mod configuration;
 pub mod execution;
+pub mod init;
 pub mod plan;
 
 pub use bootstrap::{
@@ -16,6 +17,7 @@ pub use configuration::{
     check_configuration, explain_configuration, show_configuration, ConfigurationOutcome,
 };
 pub use execution::{exec_child, serve_proxy, ExecOutcome};
+pub use init::{init_project, InitOutcome, SeedPin};
 pub use plan::{check_airlock_plan, check_locked_profile, plan_profile, PlanOutcome};
 
 #[cfg(test)]

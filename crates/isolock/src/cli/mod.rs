@@ -14,7 +14,8 @@ use crate::application::ports::{Ingestion, ProfileSnapshot, Progress};
 use crate::application::use_cases::bootstrap::Workspace;
 use crate::application::use_cases::{
     check_airlock_plan, check_locked_profile, exec_child, export_profile, fetch_profile,
-    garbage_collect, plan_profile, seed_manifest, serve_proxy, sync_profile, PlanOutcome,
+    garbage_collect, init_project, plan_profile, seed_manifest, serve_proxy, sync_profile,
+    PlanOutcome, SeedPin,
 };
 use crate::domain::Settings;
 use clifacet::contract::ExitPolicy;
@@ -22,6 +23,7 @@ use clifacet::policy::Policy;
 use clifacet::{App, Failure};
 use commands::configuration::Config;
 use commands::ingestion::{Ingest, Push};
+use commands::init::Init;
 use commands::profiles::{Export, Fetch, Gc, NoArguments, Plan, Sync};
 use commands::proxy::Exec;
 use context::AppContext;
@@ -95,6 +97,21 @@ fn context_from_cli(cli: &Isolock) -> Result<AppContext, Failure> {
 
 #[clifacet::commands]
 impl Isolock {
+    /// Scaffold a minimal configuration and a reviewed manifest template.
+    pub fn init(&self, #[clifacet(subcommand)] options: Init) -> Result<String, Failure> {
+        let seed = SeedPin::current()
+            .map_err(|message| error::execution(crate::domain::DomainError::new(message)))?;
+        let outcome = init_project(
+            self.context.root(),
+            options.force,
+            &options.profile,
+            &options.platform,
+            &seed,
+        )
+        .map_err(|message| error::execution(crate::domain::DomainError::new(message)))?;
+        Ok(view::init(&outcome))
+    }
+
     /// Validate or explain configuration without fetching artifacts.
     pub fn config(&self, #[clifacet(subcommand)] config: Config) -> Result<String, Failure> {
         // The nested controller receives only the already-wired context, never argv.

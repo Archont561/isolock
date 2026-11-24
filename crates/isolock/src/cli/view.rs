@@ -4,7 +4,8 @@
 
 use crate::application::ports::CollectionReport;
 use crate::application::use_cases::{
-    ConfigurationOutcome, ExecOutcome, FetchOutcome, PlanOutcome, SeedOutcome, SyncOutcome,
+    ConfigurationOutcome, ExecOutcome, FetchOutcome, InitOutcome, PlanOutcome, SeedOutcome,
+    SyncOutcome,
 };
 use std::fmt::Write as _;
 
@@ -80,6 +81,29 @@ pub fn sync(outcome: &SyncOutcome) -> String {
 #[must_use]
 pub fn export(profile: &str, platform: &str) -> String {
     format!("Exported selected profile {profile}/{platform}")
+}
+
+/// Renders an `init` outcome: what was written and what the next step is.
+#[must_use]
+pub fn init(outcome: &InitOutcome) -> String {
+    let mut lines = vec![format!(
+        "Scaffolded {}; review every pin before relying on it.",
+        outcome.written.join(", ")
+    )];
+    if outcome
+        .written
+        .iter()
+        .any(|name| name == crate::application::use_cases::init::MANIFEST_FILE)
+    {
+        // The template is deliberately empty. Say so, because an empty manifest looks
+        // like an oversight until the reason is stated.
+        lines.push(
+            "The reviewed manifest is empty on purpose: a digest identifies bytes you \
+             hold, so no pin is invented."
+                .into(),
+        );
+    }
+    lines.join("\n")
 }
 
 /// Renders a seed-manifest outcome.
