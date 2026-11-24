@@ -6,7 +6,7 @@ assignee: []
 created_date: '2026-11-24 00:00'
 labels: []
 milestone: m-9
-dependencies: [ISO-32, ISO-33]
+dependencies: [ISO-32]
 type: task
 ordinal: 34000
 ---
@@ -32,7 +32,7 @@ unfilled pins obvious instead of inventing values.
 
 ## Notes
 
-Depends on ISO-33: the setup path must end somewhere runnable, or `init` teaches a workflow
-that dead-ends. Note what `init` must *not* generate — `seed-manifest` already emits
-`.isolock/bootstrap.sh` from `templates/bootstrap.sh`, so bootstrap scripting is not
-boilerplate a generator needs to produce.
+ISO-33 landed, so the setup path now ends somewhere runnable. Note what `init` must *not*
+generate: `seed-manifest` already emits `.isolock/bootstrap.sh` from
+`templates/bootstrap.sh`, so bootstrap scripting is not boilerplate a generator needs to
+produce.

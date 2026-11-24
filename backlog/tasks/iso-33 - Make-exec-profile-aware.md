@@ -1,7 +1,7 @@
 ---
 id: ISO-33
 title: Make exec profile-aware
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-24 00:00'
 labels: []
@@ -24,11 +24,11 @@ dependency through the verified loopback proxy.
 ## Acceptance criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 `exec` selects a profile and platform (explicitly or by the ambient defaults) and runs the child with that profile's activated PATH, CARGO_HOME, and proxy environment.
-- [ ] #2 Behavior with no profile configured is unchanged: the legacy `.isolock/plan.json` path keeps byte-identical output, errors, and exit status.
-- [ ] #3 A missing or unmaterialized profile fails closed with guidance to run `sync`, and never silently falls back to the host toolchain.
-- [ ] #4 Prove `cargo add` and `pixi add` work through `exec` against the loopback proxy in a hermetic test, with upstream unreachable.
-- [ ] #5 `exec` still preserves the child's exit status and passes its argument tail through unchanged.
+- [x] #1 `exec` selects a profile and platform (explicitly or by the ambient defaults) and runs the child with that profile's activated PATH, CARGO_HOME, and proxy environment.
+- [x] #2 Behavior with no profile configured is unchanged: the legacy `.isolock/plan.json` path keeps byte-identical output, errors, and exit status.
+- [x] #3 A missing or unmaterialized profile fails closed with guidance to run `sync`, and never silently falls back to the host toolchain.
+- [x] #4 Prove `cargo add` and `pixi add` work through `exec` against the loopback proxy in a hermetic test, with upstream unreachable.
+- [x] #5 `exec` still preserves the child's exit status and passes its argument tail through unchanged.
 <!-- AC:END -->
 
 ## Notes

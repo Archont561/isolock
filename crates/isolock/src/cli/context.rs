@@ -6,11 +6,12 @@
 use crate::application::ports::{
     ConfigurationProvider, LayeredOverrides, SessionSettings, WorkspaceSelection,
 };
+use crate::application::use_cases::plan;
 use crate::cli::error;
 use crate::domain::Settings;
 use crate::infrastructure::{
-    config, profile_store, FileMaterializer, FilePlanStore, FileTransport, FilesystemConfiguration,
-    LoopbackProxy, ReviewedIngestion, WorkspacePlan,
+    config, execution, profile_store, FileMaterializer, FilePlanStore, FileTransport,
+    FilesystemConfiguration, LoopbackProxy, ReviewedIngestion, WorkspacePlan,
 };
 use clifacet::Failure;
 use std::cell::Cell;
@@ -128,12 +129,32 @@ impl AppContext {
 
     /// The resolved execution session projection.
     ///
+    /// When an explicit profile is selected the session runs inside that profile; with no
+    /// selection the legacy airlock-plan session is returned untouched.
+    ///
     /// # Errors
-    /// Returns a [`Failure`] when configuration cannot be re-projected.
+    /// Returns a [`Failure`] when configuration cannot be re-projected, the locked manifest
+    /// is missing or drifted, or the profile has not been materialized yet.
     pub fn session(&self) -> Result<SessionSettings, Failure> {
         let provider = FilesystemConfiguration::new(self.overrides.clone());
         let loaded = provider.load(&self.root).map_err(error::execution)?;
-        config::session(&self.root, &loaded).map_err(error::execution)
+        let settings = config::session(&self.root, &loaded).map_err(error::execution)?;
+        let (Some(profile), Some(platform)) = (
+            self.selection.profile.as_deref(),
+            self.selection.platform.as_deref(),
+        ) else {
+            return Ok(settings);
+        };
+        let store = self.store();
+        let graph = plan::locked_graph(&store, &self.settings, profile, platform)
+            .map_err(error::execution)?;
+        let manifest = graph.get(profile).ok_or_else(|| {
+            error::execution(crate::domain::DomainError::new(
+                "selected profile is missing",
+            ))
+        })?;
+        execution::profile_session::prepare(&settings, manifest, &self.root)
+            .map_err(|message| error::execution(crate::domain::DomainError::new(message)))
     }
 
     /// The legacy airlock plan adapter.

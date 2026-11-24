@@ -427,6 +427,7 @@ pub fn session(
             .or_else(|_| std::env::var("no_proxy"))
             .unwrap_or_default(),
         proxy: proxy_config(proxy),
+        profile: None,
     })
 }
 

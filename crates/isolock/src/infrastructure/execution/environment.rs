@@ -53,6 +53,28 @@ impl EnvironmentContribution for CargoEnvironment<'_> {
     }
 }
 
+/// Prepends a materialized profile prefix to `PATH`.
+///
+/// The caller's `PATH` is preserved after the prefix so ordinary tools still resolve; the
+/// prefix wins for anything the profile provides.
+pub struct ProfileEnvironment {
+    pub bin: std::path::PathBuf,
+}
+impl EnvironmentContribution for ProfileEnvironment {
+    fn contribute(&self, environment: &mut ChildEnvironment) {
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        let prefix = self.bin.to_string_lossy();
+        environment.set(
+            "PATH",
+            if inherited.is_empty() {
+                prefix.into_owned()
+            } else {
+                format!("{prefix}:{inherited}")
+            },
+        );
+    }
+}
+
 pub struct PixiEnvironment<'a> {
     pub config: &'a Path,
     pub origin: &'a str,
