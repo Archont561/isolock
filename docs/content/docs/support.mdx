@@ -9,13 +9,18 @@ This page is the support contract for Isolock `0.1.0`. An artifact being built o
 is not, by itself, evidence that the corresponding workflow is supported. The table below
 separates native CLI artifact coverage from the narrower profile-materialization matrix.
 
-| Surface | 0.1 tested support | Acceptance evidence |
-| --- | --- | --- |
-| Standalone CLI archive | Linux x86_64 GNU, macOS arm64, Windows x86_64 | Native release-artifact smoke job: extract the archive; verify version/help, typed config, and a clean CI plan. |
-| Conda CLI package | `linux-64`, `osx-arm64`, and `win-64` packages built by the release workflow | Native `rattler-build` recipe test invokes the installed package's version, help, and configuration commands. |
-| Locked-profile runtime materialization | `linux-64`: `rust-pixi` and `rust-standalone` | Required CI jobs restore selected reviewed profiles and run offline. `rust-pixi` additionally installs one deterministic Conda fixture with real Pixi after payload/profile publication to a disposable Git branch and a cold consumer fetch; the remote is removed before offline sync. This is not a claim for other OS/architecture/profile combinations. |
-| Reviewed storage publication | Linux CI with disposable local Git remotes | Real CLI tests cover ingestion, publication, cold restoration, epoch policy, retries, and producer checkout/index preservation. No test writes to project artifact storage. |
-| Registry proxy protocols | PyPI, Conda, npm, and Cargo through the `isolock exec` CLI path on Linux | Required user-journey test requests each metadata and artifact endpoint from a pinned local snapshot, rejects an unreviewed miss, and checks CAS tampering fails closed. |
+| Surface | 0.1 tested support | Acceptance test | Runner and network | Evidence artifact |
+| --- | --- | --- | --- | --- |
+| Standalone CLI archive | Linux x86_64 GNU, macOS arm64, Windows x86_64 | Release-artifact smoke job extracts the archive and checks version, help, typed config, and a clean CI plan | Native `ubuntu-latest`, `macos-latest`, `windows-latest`; no registry access | Job status per platform in the CI run |
+| Conda CLI package | `linux-64`, `osx-arm64`, and `win-64` packages built by the release workflow | `rattler-build` recipe test invokes the installed package's version, help, and configuration commands | Native matrix runners in the release workflow; offline after build | Job status in the release run |
+| Locked-profile runtime materialization | `linux-64`: `rust-pixi` and `rust-standalone` | `tools test profile-materialize` restores the selected reviewed profiles and runs them offline. `rust-pixi` also installs one deterministic Conda fixture with real Pixi after publishing to a disposable Git branch and fetching as a cold consumer; the remote is removed before the offline sync | `ubuntu-latest`, one job per profile; loopback only, no registry | Job status per profile; no uploaded artifact |
+| Reviewed storage publication | Linux CI with disposable local Git remotes | Real CLI tests cover ingestion, publication, cold restoration, epoch policy, retries, and producer checkout/index preservation. No test writes to project artifact storage | `ubuntu-latest`; local git remotes, no network | Job status |
+| Registry proxy protocols | PyPI, Conda, npm, and Cargo through the `isolock exec` CLI path on Linux | `tools test acceptance` requests each metadata and artifact endpoint from a pinned local snapshot, rejects an unreviewed miss, and checks CAS tampering fails closed | `ubuntu-latest`; loopback proxy against a local CAS | Job status |
+| Real package-manager clients | `pixi add` against the generated Conda channel; `cargo add` against the vendored source. Both `linux-64`, offline | `real_pixi_add_resolves_from_the_generated_channel`, `real_pixi_add_reports_a_miss_for_an_unreviewed_package`, `real_cargo_add_adds_a_reviewed_crate_offline`. pip and npm clients are not claimed | `ubuntu-latest` in the profile matrix; loopback and on-disk vendored source | Job status per profile |
+
+Acceptance evidence for these claims is job status in the CI run on the exact commit, plus
+the local `tools` invocations named above. CI does not upload a per-claim report artifact;
+the release record captures the candidate commit and its run URL instead.
 
 The native artifact smoke check validates that each released standalone CLI can start,
 parse commands, validate default configuration, and check an empty legacy plan on its
@@ -44,8 +49,8 @@ not assert native profile materialization on macOS or Windows.
 
 Isolock does not resolve registry versions, discover transitive dependencies, or provide a
 host-network firewall. The proxy acceptance suite verifies the supported HTTP protocol
-routes with the CLI and deterministic local fixtures; it does not claim that pip, Pixi,
-Conda, npm, or Cargo package-manager transactions have been exercised end to end. Offline
+routes with the CLI and deterministic local fixtures; package-manager client behavior is
+covered only by the two real-client journeys named below, and not for pip or npm. Offline
 profile materialization is not claimed for macOS or Windows. Git transport may transfer a
 broader snapshot before retaining only the selected closure in the local CAS. Automatic
 legacy/sharded storage migration, old-epoch deletion, and connected proxy-miss acquisition
@@ -63,10 +68,14 @@ explicit and pin-verified. Missing proxy artifacts fail closed; a proxy listener
 host firewall or a general network sandbox.
 
 The proxy acceptance test exercises real CLI process/environment routing and HTTP protocol
-responses against a deterministic local CAS snapshot. It does **not** run pip, Pixi/Conda,
-npm, or Cargo as package-manager clients in the acceptance fixture. Package-manager
-transaction compatibility beyond the tested protocol routes remains a follow-up before
-making a stronger claim.
+responses against a deterministic local CAS snapshot. Two release-gated journeys in the
+profile matrix go further and run real clients: `pixi add` resolves a reviewed Conda package
+from the generated channel and fails closed for an unreviewed one, and `cargo add` records a
+reviewed crate offline from the vendored source. Both run in CI on `linux-64`.
+
+pip and npm are **not** exercised as clients, and `cargo add` resolves from the vendored
+directory source rather than over the proxy. No 0.1 claim covers dependency resolution for
+those clients or transitive dependency discovery for any of them.
 
 The profile matrix proves only the selected Rust/Pixi and standalone Rust workflows on
 `linux-64`. Other runtime providers, host/target combinations, artifact sizes, and connected

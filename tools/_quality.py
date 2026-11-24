@@ -11,10 +11,13 @@ PROFILE_JOURNEYS = {
     "rust-pixi": [
         "real_pixi_restores_the_selected_profile_from_a_cold_offline_cache",
         "real_pixi_conda_profile_roundtrips_through_git_storage_and_installs_offline",
+        "real_pixi_add_resolves_from_the_generated_channel",
+        "real_pixi_add_reports_a_miss_for_an_unreviewed_package",
     ],
     "rust-standalone": [
         "real_standalone_rust_builds_a_locked_registry_dependency_offline",
         "real_standalone_rust_builds_a_locked_git_dependency_offline",
+        "real_cargo_add_adds_a_reviewed_crate_offline",
     ],
 }
 
