@@ -1,16 +1,27 @@
 //! Git plumbing in a disposable repository and private index, never the code checkout.
 
 use super::manifest::MAX_MANIFEST_BYTES;
+use crate::application::ports::{ProcessOutput, ProcessRequest, ProcessRunner};
 use isolock_cas::{Sha256Digest, SHARD_SIZE_BYTES};
 use isolock_plan::profile::{identifier, public_source};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
 
 pub(super) const MARKER_PATH: &str = "isolock-storage.json";
 pub(super) const MARKER: &[u8] = b"{\"schema-version\":1,\"format\":\"reviewed-artifacts\"}\n";
 pub(super) const MAX_TREE_BYTES: u64 = 1500 * 1024 * 1024;
+/// Variables that would redirect Git away from the repository this publisher owns.
+const CLEAN_GIT: [&str; 7] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_SHALLOW_FILE",
+];
+
 const MIGRATION: &str = "reviewed epoch migration requires a marked, verified-raw reviewed-artifact snapshot; re-ingest original files using a reviewed manifest into an empty isolock/vN (use directory transport for sharded originals)";
 
 #[derive(Clone)]
@@ -19,7 +30,8 @@ pub(super) struct Blob {
     pub size: u64,
 }
 
-pub struct Publisher {
+pub struct Publisher<'a> {
+    processes: &'a dyn ProcessRunner,
     root: PathBuf,
     staging: tempfile::TempDir,
     hooks: PathBuf,
@@ -29,19 +41,27 @@ pub struct Publisher {
     pub(super) entries: BTreeMap<String, Blob>,
 }
 
-impl Publisher {
-    pub fn open(root: &Path, remote: &str, reference: &str) -> Result<Self, String> {
+impl<'a> Publisher<'a> {
+    pub fn open(
+        processes: &'a dyn ProcessRunner,
+        root: &Path,
+        remote: &str,
+        reference: &str,
+    ) -> Result<Self, String> {
         generation(reference)?;
         let common = code_git(
+            processes,
             root,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )?;
         let hooks = code_git(
+            processes,
             root,
             &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
         )?;
-        let format = code_git(root, &["rev-parse", "--show-object-format"])?;
+        let format = code_git(processes, root, &["rev-parse", "--show-object-format"])?;
         let mut publisher = Self {
+            processes,
             root: root.into(),
             staging: tempfile::tempdir().map_err(|_| "cannot create a private Git index")?,
             hooks: text(&hooks)?.into(),
@@ -52,19 +72,31 @@ impl Publisher {
         };
         // Preserve repository-local author, credential and hook configuration, but
         // isolate objects, refs, FETCH_HEAD and shallow state as well as the index.
-        let output = clean_git(root)
-            .args(["init", "--bare", "--quiet"])
-            .arg(format!("--object-format={}", text(&format)?))
-            .arg(publisher.staging.path().join("git"))
-            .output()
+        let output = publisher
+            .processes
+            .run(
+                &publisher
+                    .code(&["init", "--bare", "--quiet"])
+                    .argument(format!("--object-format={}", text(&format)?))
+                    .argument(publisher.staging.path().join("git").to_string_lossy()),
+            )
             .map_err(|_| "cannot start Git publication")?;
         checked(output, "private repository initialization")?;
-        let output = clean_git(root)
-            .args(["config", "--file"])
-            .arg(publisher.staging.path().join("git/config"))
-            .args(["--add", "include.path"])
-            .arg(Path::new(text(&common)?).join("config"))
-            .output()
+        let output = publisher
+            .processes
+            .run(
+                &publisher
+                    .code(&["config", "--file"])
+                    .argument(
+                        publisher
+                            .staging
+                            .path()
+                            .join("git/config")
+                            .to_string_lossy(),
+                    )
+                    .arguments(["--add", "include.path"])
+                    .argument(Path::new(text(&common)?).join("config").to_string_lossy()),
+            )
             .map_err(|_| "cannot configure private Git repository")?;
         checked(output, "private repository configuration")?;
         publisher.remote = publisher.remote(remote)?;
@@ -82,21 +114,37 @@ impl Publisher {
         Ok(publisher)
     }
 
-    fn command(&self, arguments: &[&str]) -> Command {
-        let mut command = clean_git(&self.root);
-        command
-            .env("GIT_DIR", self.staging.path().join("git"))
-            .env("GIT_WORK_TREE", &self.root)
-            .env("GIT_INDEX_FILE", self.staging.path().join("index"))
-            .arg("-c")
-            .arg(format!("core.hooksPath={}", self.hooks.display()))
-            .args(arguments);
-        command
+    /// Starts a publication command against the private index and object store.
+    fn command(&self, arguments: &[&str]) -> ProcessRequest {
+        ProcessRequest::new("git")
+            .without_variables(CLEAN_GIT)
+            .with_variable("GIT_TERMINAL_PROMPT", "0")
+            .with_variable("GIT_DIR", self.staging.path().join("git").to_string_lossy())
+            .with_variable("GIT_WORK_TREE", self.root.to_string_lossy())
+            .with_variable(
+                "GIT_INDEX_FILE",
+                self.staging.path().join("index").to_string_lossy(),
+            )
+            .argument("-C")
+            .argument(self.root.to_string_lossy())
+            .argument("-c")
+            .argument(format!("core.hooksPath={}", self.hooks.display()))
+            .arguments(arguments.iter().copied())
     }
 
-    fn output(&self, arguments: &[&str]) -> Result<Output, String> {
-        self.command(arguments)
-            .output()
+    /// Starts a code-repository command with only the isolation applied.
+    fn code(&self, arguments: &[&str]) -> ProcessRequest {
+        ProcessRequest::new("git")
+            .without_variables(CLEAN_GIT)
+            .with_variable("GIT_TERMINAL_PROMPT", "0")
+            .argument("-C")
+            .argument(self.root.to_string_lossy())
+            .arguments(arguments.iter().copied())
+    }
+
+    fn output(&self, arguments: &[&str]) -> Result<ProcessOutput, String> {
+        self.processes
+            .run(&self.command(arguments))
             .map_err(|_| "cannot start Git publication".into())
     }
 
@@ -155,10 +203,10 @@ impl Publisher {
             &self.remote,
             reference,
         ])?;
-        if output.status.code() == Some(2) {
+        if output.code == Some(2) {
             return Ok(None);
         }
-        if !output.status.success() {
+        if !output.success {
             return Err(
                 "cannot inspect storage remote; a failed lookup is not an empty branch".into(),
             );
@@ -220,12 +268,13 @@ impl Publisher {
         let path = format!("cas/{}", digest.sharded_path());
         let blob = self.entries.get(&path).ok_or("retained closure is missing an original/input CAS blob; re-ingest the reviewed original before migration")?;
         let temporary = self.staging.path().join("retained-original");
-        let file = fs::File::create(&temporary)
-            .map_err(|_| "cannot stage retained original verification")?;
         let output = self
-            .command(&["cat-file", "blob", &blob.object])
-            .stdout(Stdio::from(file))
-            .output()
+            .processes
+            .run(
+                &self
+                    .command(&["cat-file", "blob", &blob.object])
+                    .writing_stdout_to(&temporary),
+            )
             .map_err(|_| "cannot start retained original verification")?;
         checked(output, "retained original retrieval")?;
         if isolock_cas::digest_file(&temporary).map_err(|error| error.to_string())? != *digest {
@@ -238,7 +287,7 @@ impl Publisher {
 
     pub(super) fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool, String> {
         let output = self.output(&["merge-base", "--is-ancestor", ancestor, descendant])?;
-        match output.status.code() {
+        match output.code {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
             _ => Err("cannot verify retained storage ancestry".into()),
@@ -392,14 +441,15 @@ impl Publisher {
             let input = self.staging.path().join("history-objects");
             fs::write(&input, names).map_err(|_| "cannot stage history accounting")?;
             let output = self
-                .command(&[
-                    "cat-file",
-                    "--batch-check=%(objectname) %(objecttype) %(objectsize)",
-                ])
-                .stdin(Stdio::from(
-                    fs::File::open(input).map_err(|_| "cannot read history accounting")?,
-                ))
-                .output()
+                .processes
+                .run(
+                    &self
+                        .command(&[
+                            "cat-file",
+                            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+                        ])
+                        .reading_stdin_from(&input),
+                )
                 .map_err(|_| "cannot start history accounting")?;
             let objects = checked(output, "history blob accounting")?;
             for line in text(&objects)?.lines() {
@@ -478,36 +528,28 @@ impl Publisher {
     }
 }
 
-fn clean_git(root: &Path) -> Command {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(root);
-    for name in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_COMMON_DIR",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_SHALLOW_FILE",
-    ] {
-        command.env_remove(name);
-    }
-    command.env("GIT_TERMINAL_PROMPT", "0");
-    command
-}
-
-fn checked(output: Output, operation: &str) -> Result<Vec<u8>, String> {
-    if !output.status.success() {
+fn checked(output: ProcessOutput, operation: &str) -> Result<Vec<u8>, String> {
+    if !output.success {
         return Err(format!("Git {operation} failed; check repository access, author configuration, and storage history"));
     }
     Ok(output.stdout)
 }
 
-fn code_git(root: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
+fn code_git(
+    processes: &dyn ProcessRunner,
+    root: &Path,
+    arguments: &[&str],
+) -> Result<Vec<u8>, String> {
     checked(
-        clean_git(root)
-            .args(arguments)
-            .output()
+        processes
+            .run(
+                &ProcessRequest::new("git")
+                    .without_variables(CLEAN_GIT)
+                    .with_variable("GIT_TERMINAL_PROMPT", "0")
+                    .argument("-C")
+                    .argument(root.to_string_lossy())
+                    .arguments(arguments.iter().copied()),
+            )
             .map_err(|_| "cannot start Git publication")?,
         "repository discovery",
     )

@@ -1,6 +1,6 @@
 //! Selective directory transport and an explicitly reported full-snapshot Git fallback.
 
-use crate::application::ports::{BlobStore, UseCaseResult};
+use crate::application::ports::{BlobStore, ProcessRequest, ProcessRunner, UseCaseResult};
 use crate::domain::{DomainError, Storage, Transport};
 use crate::infrastructure::profile_store;
 use isolock_cas::{FileStore, Sha256Digest};
@@ -8,7 +8,6 @@ use isolock_plan::profile::{canonical_digest, ProfileManifest, StorageIdentity};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone)]
 pub enum Snapshot {
@@ -17,6 +16,7 @@ pub enum Snapshot {
 }
 
 pub fn identity(
+    processes: &dyn ProcessRunner,
     root: &Path,
     storage: &Storage,
     locked: Option<&StorageIdentity>,
@@ -43,7 +43,7 @@ pub fn identity(
         }
         return Ok(locked.clone());
     }
-    let snapshot = git_snapshot(root, source, &storage.reference)?;
+    let snapshot = git_snapshot(processes, root, source, &storage.reference)?;
     let Snapshot::Git { commit, .. } = snapshot else {
         return Err("Git snapshot was not created".into());
     };
@@ -56,6 +56,7 @@ pub fn identity(
 }
 
 pub fn snapshot(
+    processes: &dyn ProcessRunner,
     root: &Path,
     storage: &Storage,
     locked: Option<&StorageIdentity>,
@@ -72,7 +73,7 @@ pub fn snapshot(
             let reference = locked
                 .and_then(|identity| identity.commit.as_deref())
                 .unwrap_or(&storage.reference);
-            let snapshot = git_snapshot(root, source, reference)?;
+            let snapshot = git_snapshot(processes, root, source, reference)?;
             if let (Some(expected), Snapshot::Git { commit, .. }) = (
                 locked.and_then(|identity| identity.commit.as_ref()),
                 &snapshot,
@@ -86,7 +87,12 @@ pub fn snapshot(
     }
 }
 
-fn git_snapshot(root: &Path, source: &str, reference: &str) -> Result<Snapshot, String> {
+fn git_snapshot(
+    processes: &dyn ProcessRunner,
+    root: &Path,
+    source: &str,
+    reference: &str,
+) -> Result<Snapshot, String> {
     if source.starts_with('-')
         || reference.starts_with('-')
         || reference.contains(['\0', '\n', '\r', ':'])
@@ -96,9 +102,10 @@ fn git_snapshot(root: &Path, source: &str, reference: &str) -> Result<Snapshot, 
     let key = canonical_digest(&source)?;
     let repository = root.join(".isolock/transport").join(key.as_str());
     fs::create_dir_all(&repository).map_err(|error| error.to_string())?;
-    git(&repository, &["init", "--bare", "--quiet"])?;
+    git(processes, &repository, &["init", "--bare", "--quiet"])?;
     eprintln!("isolock transport: Git fallback fetches a broader storage snapshot; profile selection is local, not blob-selective transfer");
     git(
+        processes,
         &repository,
         &[
             "fetch",
@@ -111,6 +118,7 @@ fn git_snapshot(root: &Path, source: &str, reference: &str) -> Result<Snapshot, 
         ],
     )?;
     let commit = String::from_utf8(git(
+        processes,
         &repository,
         &["rev-parse", "--verify", "FETCH_HEAD^{commit}"],
     )?)
@@ -123,14 +131,20 @@ fn git_snapshot(root: &Path, source: &str, reference: &str) -> Result<Snapshot, 
     Ok(Snapshot::Git { repository, commit })
 }
 
-fn git(repository: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repository)
-        .args(arguments)
-        .output()
+fn git(
+    processes: &dyn ProcessRunner,
+    repository: &Path,
+    arguments: &[&str],
+) -> Result<Vec<u8>, String> {
+    let output = processes
+        .run(
+            &ProcessRequest::new("git")
+                .argument("-C")
+                .argument(repository.to_string_lossy())
+                .arguments(arguments.iter().copied()),
+        )
         .map_err(|_| "cannot start Git transport")?;
-    if !output.status.success() {
+    if !output.success {
         return Err(
             "Git transport failed; check the source, reference and repository access".into(),
         );
@@ -139,20 +153,27 @@ fn git(repository: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
 }
 
 impl Snapshot {
-    pub fn manifest(&self, digest: &Sha256Digest) -> Result<ProfileManifest, String> {
+    pub fn manifest(
+        &self,
+        processes: &dyn ProcessRunner,
+        digest: &Sha256Digest,
+    ) -> Result<ProfileManifest, String> {
         let relative = format!("plans/objects/{}.json", digest.as_str());
         let bytes = match self {
             Self::Directory(root) => fs::read(root.join(relative)).map_err(|_| {
                 "selected manifest is not available from the directory source".to_owned()
             })?,
-            Self::Git { repository, commit } => {
-                git(repository, &["show", &format!("{commit}:{relative}")])?
-            }
+            Self::Git { repository, commit } => git(
+                processes,
+                repository,
+                &["show", &format!("{commit}:{relative}")],
+            )?,
         };
         profile_store::decode(&bytes, Some(digest))
     }
     pub fn copy_blob(
         &self,
+        processes: &dyn ProcessRunner,
         store: &mut dyn BlobStore,
         digest: &Sha256Digest,
     ) -> Result<bool, String> {
@@ -171,27 +192,26 @@ impl Snapshot {
                     .map_err(String::from)
             }
             Self::Git { repository, commit } => {
-                let mut child = Command::new("git")
-                    .arg("-C")
-                    .arg(repository)
-                    .args(["show", &format!("{commit}:cas/{}", digest.sharded_path())])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .spawn()
+                // The blob streams straight from Git into CAS, so a large artifact is
+                // never buffered whole.
+                let mut result = Ok(());
+                let output = processes
+                    .run_streaming(
+                        &ProcessRequest::new("git")
+                            .argument("-C")
+                            .argument(repository.to_string_lossy())
+                            .arguments([
+                                "show".to_owned(),
+                                format!("{commit}:cas/{}", digest.sharded_path()),
+                            ]),
+                        &mut |stream| {
+                            let stream = stream.ok_or("Git blob stream is unavailable")?;
+                            result = store.put_reader(digest, stream).map_err(String::from);
+                            result.clone()
+                        },
+                    )
                     .map_err(|_| "cannot start Git blob retrieval")?;
-                let mut stdout = child
-                    .stdout
-                    .take()
-                    .ok_or("Git blob stream is unavailable")?;
-                let result = store.put_reader(digest, &mut stdout).map_err(String::from);
-                drop(stdout);
-                if result.is_err() {
-                    let _ = child.kill();
-                }
-                let status = child
-                    .wait()
-                    .map_err(|_| "cannot wait for Git blob retrieval")?;
-                if !status.success() {
+                if !output.success {
                     return Err(format!(
                         "Git source is missing or cannot read artifact {}",
                         digest.as_str()
@@ -208,6 +228,7 @@ impl Snapshot {
 /// # Errors
 /// Returns a message when a manifest is missing, mismatched, or the graph is inconsistent.
 pub fn fetch_graph(
+    processes: &dyn ProcessRunner,
     workspace: &mut dyn BlobStore,
     source: &Snapshot,
     digest: &Sha256Digest,
@@ -219,7 +240,7 @@ pub fn fetch_graph(
         if !seen.insert(digest.as_str().to_owned()) {
             continue;
         }
-        let manifest = source.manifest(&digest)?;
+        let manifest = source.manifest(processes, &digest)?;
         for child in manifest.constituents.values() {
             queue.push(child.clone());
         }
@@ -249,6 +270,7 @@ pub fn fetch_graph(
 /// # Errors
 /// Returns a message when a payload is missing from the source or cannot be stored.
 pub fn fetch_blobs(
+    processes: &dyn ProcessRunner,
     workspace: &mut dyn BlobStore,
     source: &Snapshot,
     manifests: &BTreeMap<String, ProfileManifest>,
@@ -256,7 +278,7 @@ pub fn fetch_blobs(
     let mut count = 0;
     for digest in profile_store::reachable(manifests) {
         let digest = Sha256Digest::parse(&digest).map_err(str::to_owned)?;
-        if source.copy_blob(workspace, &digest)? {
+        if source.copy_blob(processes, workspace, &digest)? {
             count += 1;
         }
     }
@@ -308,9 +330,10 @@ pub fn export(
 /// # Errors
 /// Propagates the first transport failure as a [`DomainError`].
 pub fn graph_for(
+    processes: &dyn ProcessRunner,
     workspace: &mut dyn BlobStore,
     source: &Snapshot,
     digest: &Sha256Digest,
 ) -> UseCaseResult<BTreeMap<String, ProfileManifest>> {
-    fetch_graph(workspace, source, digest).map_err(DomainError::new)
+    fetch_graph(processes, workspace, source, digest).map_err(DomainError::new)
 }

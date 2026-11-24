@@ -1,17 +1,22 @@
 //! Local by default; connected acquisition is explicit and never resolves registries.
 
 use super::manifest::Manifest;
+use crate::application::ports::{ProcessRequest, ProcessRunner};
 use isolock_cas::{digest_file, FileStore, SHARD_SIZE_BYTES};
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 pub struct Staged {
     _directory: tempfile::TempDir,
     pub store: FileStore,
 }
 
-pub fn stage(manifest: &Manifest, originals: &Path, download: bool) -> Result<Staged, String> {
+pub fn stage(
+    processes: &dyn ProcessRunner,
+    manifest: &Manifest,
+    originals: &Path,
+    download: bool,
+) -> Result<Staged, String> {
     if !download
         && !fs::symlink_metadata(originals)
             .map_err(|_| "cannot read original artifact directory")?
@@ -27,32 +32,32 @@ pub fn stage(manifest: &Manifest, originals: &Path, download: bool) -> Result<St
     for artifact in &manifest.artifacts {
         let path = if download {
             let path = downloads.join(&artifact.filename);
-            let status = Command::new("curl")
-                .args([
-                    "--disable",
-                    "--globoff",
-                    "--fail",
-                    "--location",
-                    "--silent",
-                    "--show-error",
-                    "--proto",
-                    "=https",
-                    "--proto-redir",
-                    "=https",
-                    "--max-time",
-                    "300",
-                    "--max-filesize",
-                    &SHARD_SIZE_BYTES.to_string(),
-                    "--output",
-                ])
-                .arg(&path)
-                .arg("--")
-                .arg(&artifact.source)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
+            let success = processes
+                .run_discarding_output(
+                    &ProcessRequest::new("curl")
+                        .arguments([
+                            "--disable",
+                            "--globoff",
+                            "--fail",
+                            "--location",
+                            "--silent",
+                            "--show-error",
+                            "--proto",
+                            "=https",
+                            "--proto-redir",
+                            "=https",
+                            "--max-time",
+                            "300",
+                            "--max-filesize",
+                        ])
+                        .argument(SHARD_SIZE_BYTES.to_string())
+                        .argument("--output")
+                        .argument(path.to_string_lossy())
+                        .argument("--")
+                        .argument(artifact.source.clone()),
+                )
                 .map_err(|_| "cannot start curl for explicitly connected ingestion")?;
-            if !status.success() {
+            if !success.success {
                 return Err("reviewed artifact download failed; no CAS batch was accepted".into());
             }
             path

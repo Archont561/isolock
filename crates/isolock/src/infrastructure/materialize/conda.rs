@@ -5,6 +5,7 @@
 //! original project inputs and archives remain immutable and locked in the profile plan.
 
 use super::{archive, payloads, seeds};
+use crate::application::ports::{ProcessRequest, ProcessRunner};
 use crate::infrastructure::profile_store::{self, Workspace};
 use isolock_plan::profile::{
     canonical_digest, identifier, Artifact, ArtifactKind, ProfileManifest,
@@ -12,9 +13,9 @@ use isolock_plan::profile::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub fn install(
+    processes: &dyn ProcessRunner,
     workspace: &Workspace,
     manifest: &ProfileManifest,
     pixi: &Path,
@@ -49,56 +50,77 @@ pub fn install(
             return Err("refusing to overwrite an unmanaged Pixi environment; move it aside before restoring the profile".into());
         }
     }
-    run_pixi(workspace, manifest, pixi, &project, environment)?;
+    run_pixi(
+        processes,
+        workspace,
+        manifest,
+        pixi,
+        &Sandbox {
+            project: &project,
+            environment,
+        },
+    )?;
     verify_prefix(&prefix, manifest)?;
     seeds::link(&prefix, &public_prefix)?;
     Ok(public_prefix)
 }
 
+/// The isolated workspace one derived Pixi install runs inside.
+struct Sandbox<'a> {
+    project: &'a Path,
+    environment: &'a str,
+}
+
 fn run_pixi(
+    processes: &dyn ProcessRunner,
     workspace: &Workspace,
     manifest: &ProfileManifest,
     pixi: &Path,
-    project: &Path,
-    environment: &str,
+    sandbox: &Sandbox<'_>,
 ) -> Result<(), String> {
-    // No user/project Pixi config or remote URLs are inherited by this derived workspace.
+    let Sandbox {
+        project,
+        environment,
+    } = *sandbox;
     let config = project.join("pixi-config.toml");
+    // No user/project Pixi config or remote URLs are inherited by this derived workspace.
     profile_store::write_file(&config, b"offline = true\n", true)?;
     if project.join(".pixi/config.toml").exists() {
         return Err("unexpected configuration in an isolated Pixi workspace".into());
     }
-    let status = Command::new(pixi)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", project.join("home"))
-        .env("XDG_CACHE_HOME", project.join("cache"))
-        .args([
-            "install",
-            "--environment",
-            environment,
-            "--locked",
-            "--offline",
-            "--manifest-path",
-        ])
-        .arg(project.join("pixi.toml"))
-        .arg("--config-file")
-        .arg(&config)
-        .env("PIXI_CONFIG_FILE", &config)
-        .env("PIXI_OFFLINE", "true")
-        .env(
-            "PIXI_CACHE_DIR",
-            workspace
-                .root
-                .join(".isolock/cache/pixi")
-                .join(manifest.digest()?.as_str()),
+    // The isolated environment is built explicitly rather than inherited, so the
+    // verified seed cannot read user or project Pixi configuration.
+    let success = processes
+        .run_discarding_output(
+            &ProcessRequest::new(pixi)
+                .without_variables(["PIXI_CONDA_CHANNELS", "PIXI_NO_CONFIG", "PIXI_FROZEN"])
+                .with_variable("PATH", "/usr/bin:/bin")
+                .with_variable("HOME", project.join("home").to_string_lossy())
+                .with_variable("XDG_CACHE_HOME", project.join("cache").to_string_lossy())
+                .with_variable("PIXI_CONFIG_FILE", config.to_string_lossy())
+                .with_variable("PIXI_OFFLINE", "true")
+                .with_variable(
+                    "PIXI_CACHE_DIR",
+                    workspace
+                        .root
+                        .join(".isolock/cache/pixi")
+                        .join(manifest.digest()?.as_str())
+                        .to_string_lossy(),
+                )
+                .arguments([
+                    "install",
+                    "--environment",
+                    environment,
+                    "--locked",
+                    "--offline",
+                    "--manifest-path",
+                ])
+                .argument(project.join("pixi.toml").to_string_lossy())
+                .argument("--config-file")
+                .argument(config.to_string_lossy()),
         )
-        .env_remove("PIXI_CONDA_CHANNELS")
-        .env_remove("PIXI_NO_CONFIG")
-        .env_remove("PIXI_FROZEN")
-        .status()
         .map_err(|_| "cannot execute the verified Pixi seed")?;
-    if !status.success() {
+    if !success.success {
         return Err("locked offline Pixi materialization failed".into());
     }
     Ok(())

@@ -1,14 +1,16 @@
 //! Adapts profile materialization to the [`Materializer`] port.
 
-use crate::application::ports::{Materializer, ProfileGraph, UseCaseResult};
+use crate::application::ports::{Materializer, ProcessRunner, ProfileGraph, UseCaseResult};
 use crate::domain::DomainError;
 use crate::infrastructure::materialize;
+use crate::infrastructure::process::SystemProcesses;
 use crate::infrastructure::profile_store::{self, Workspace};
 use isolock_plan::profile::ProfileManifest;
 use std::path::{Path, PathBuf};
 
 /// Materializes reviewed graphs into `.isolock` prefixes on this host.
 pub struct FileMaterializer {
+    processes: Box<dyn ProcessRunner>,
     workspace: Workspace,
 }
 
@@ -16,7 +18,18 @@ impl FileMaterializer {
     /// Binds materialization to the store of one project.
     #[must_use]
     pub fn new(workspace: Workspace) -> Self {
-        Self { workspace }
+        Self {
+            processes: Box::new(SystemProcesses::new()),
+            workspace,
+        }
+    }
+
+    /// Replaces the process boundary, for tests that must not spawn programs.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_processes(mut self, processes: Box<dyn ProcessRunner>) -> Self {
+        self.processes = processes;
+        self
     }
 
     /// The default seed manifest path for one profile and platform.
@@ -31,7 +44,13 @@ impl FileMaterializer {
 
 impl Materializer for FileMaterializer {
     fn install(&self, manifests: &ProfileGraph, selected: &str) -> UseCaseResult<PathBuf> {
-        materialize::install(&self.workspace, manifests, selected).map_err(DomainError::new)
+        materialize::install(
+            self.processes.as_ref(),
+            &self.workspace,
+            manifests,
+            selected,
+        )
+        .map_err(DomainError::new)
     }
 
     fn bootstrap_manifest(&self, manifest: &ProfileManifest) -> UseCaseResult<String> {

@@ -3,7 +3,7 @@
 use super::epoch::{self, Policy};
 use super::git::Publisher;
 use super::manifest::{Artifact, Manifest};
-use crate::application::ports::{ProfileSnapshot, WorkspaceSelection};
+use crate::application::ports::{ProcessRunner, ProfileSnapshot, WorkspaceSelection};
 use crate::domain::Settings;
 use crate::infrastructure::profile_store::{StoreLease, Workspace};
 use isolock_plan::{AirlockPlan, PlannedArtifact};
@@ -11,6 +11,8 @@ use std::path::Path;
 
 /// One reviewed publication request.
 pub struct Publication<'a> {
+    /// The process boundary Git publication runs on.
+    pub processes: &'a dyn ProcessRunner,
     /// Project root every relative path resolves against.
     pub root: &'a Path,
     /// Validated settings describing the storage reference.
@@ -31,6 +33,7 @@ pub struct Publication<'a> {
 
 pub fn publish(request: Publication<'_>) -> Result<String, String> {
     let Publication {
+        processes,
         root,
         settings,
         workspace,
@@ -49,6 +52,7 @@ pub fn publish(request: Publication<'_>) -> Result<String, String> {
             return Err("profile publication cannot select registry packages".into());
         }
         return super::profiles::publish_profile(
+            processes,
             root,
             snapshot,
             &settings.storage.reference,
@@ -60,7 +64,7 @@ pub fn publish(request: Publication<'_>) -> Result<String, String> {
     let policy = epoch_policy
         .map(|path| Policy::read(&root.join(path)))
         .transpose()?;
-    let mut publisher = Publisher::open(root, remote, &settings.storage.reference)?;
+    let mut publisher = Publisher::open(processes, root, remote, &settings.storage.reference)?;
     if let Some(status) = epoch::review(&mut publisher, policy.as_ref(), Some(&manifest))? {
         return Ok(status);
     }
@@ -86,7 +90,7 @@ pub fn publish(request: Publication<'_>) -> Result<String, String> {
 }
 
 fn stage_manifest(
-    publisher: &mut Publisher,
+    publisher: &mut Publisher<'_>,
     workspace: &Workspace,
     manifest: &Manifest,
 ) -> Result<(), String> {

@@ -1,6 +1,6 @@
 //! Profile-local launchers over verified seeds, runtime prefixes and shared payloads.
 
-mod archive;
+pub(crate) mod archive;
 mod conda;
 mod launchers;
 mod payloads;
@@ -8,6 +8,7 @@ mod seeds;
 
 pub use seeds::bootstrap_manifest;
 
+use crate::application::ports::ProcessRunner;
 use crate::infrastructure::profile_store::{self, Workspace};
 use isolock_cas::{digest_file, Sha256Digest};
 use isolock_plan::profile::{
@@ -46,13 +47,18 @@ struct Derived {
 }
 
 impl Derived {
-    fn provision(workspace: &Workspace, manifest: &ProfileManifest) -> Result<Self, String> {
+    fn provision(
+        processes: &dyn ProcessRunner,
+        workspace: &Workspace,
+        manifest: &ProfileManifest,
+    ) -> Result<Self, String> {
         if manifest.specification.provider == Provider::Composed {
             return Ok(Self::default());
         }
-        let seeds = seeds::provision(workspace, manifest)?;
+        let seeds = seeds::provision(processes, workspace, manifest)?;
         let pixi_prefix = if manifest.specification.provider == Provider::Pixi {
             Some(conda::install(
+                processes,
                 workspace,
                 manifest,
                 seeds.get("pixi").ok_or("locked Pixi seed is missing")?,
@@ -66,15 +72,18 @@ impl Derived {
             .iter()
             .filter(|artifact| artifact.kind == ArtifactKind::Runtime)
         {
-            runtimes.insert(artifact.name.clone(), runtime(workspace, artifact)?);
+            runtimes.insert(
+                artifact.name.clone(),
+                runtime(processes, workspace, artifact)?,
+            );
         }
         Ok(Self {
             seeds,
             runtimes,
             pixi_prefix,
-            cargo: payloads::cargo(workspace, manifest)?,
-            wheels: payloads::wheels(workspace, manifest)?,
-            javascript: payloads::javascript(workspace, manifest)?,
+            cargo: payloads::cargo(processes, workspace, manifest)?,
+            wheels: payloads::wheels(processes, workspace, manifest)?,
+            javascript: payloads::javascript(processes, workspace, manifest)?,
         })
     }
 
@@ -98,6 +107,7 @@ impl Derived {
 }
 
 pub fn install(
+    processes: &dyn ProcessRunner,
     workspace: &Workspace,
     manifests: &BTreeMap<String, ProfileManifest>,
     selected: &str,
@@ -106,13 +116,14 @@ pub fn install(
         .get(selected)
         .ok_or("selected manifest is missing")?;
     let mut prefixes = BTreeMap::new();
-    install_one(workspace, manifests, manifest, &mut prefixes)?;
+    install_one(processes, workspace, manifests, manifest, &mut prefixes)?;
     prefixes
         .remove(selected)
         .ok_or_else(|| "selected profile was not materialized".into())
 }
 
 fn install_one(
+    processes: &dyn ProcessRunner,
     workspace: &Workspace,
     manifests: &BTreeMap<String, ProfileManifest>,
     manifest: &ProfileManifest,
@@ -123,6 +134,7 @@ fn install_one(
     }
     for name in manifest.constituents.keys() {
         install_one(
+            processes,
             workspace,
             manifests,
             manifests.get(name).ok_or("constituent is missing")?,
@@ -136,7 +148,7 @@ fn install_one(
         .join(&manifest.profile)
         .join(&manifest.platform)
         .join(digest.as_str());
-    let derived = Derived::provision(workspace, manifest)?;
+    let derived = Derived::provision(processes, workspace, manifest)?;
     if !archive::reusable(&destination, digest.as_str())? {
         let stage = payloads::stage(&destination)?;
         launchers::create(
@@ -274,7 +286,11 @@ fn linked_artifacts(artifacts: &[Artifact]) -> BTreeMap<String, Vec<Sha256Digest
     linked_artifacts
 }
 
-fn runtime(workspace: &Workspace, artifact: &Artifact) -> Result<PathBuf, String> {
+fn runtime(
+    processes: &dyn ProcessRunner,
+    workspace: &Workspace,
+    artifact: &Artifact,
+) -> Result<PathBuf, String> {
     let key = canonical_digest(&(1, artifact))?;
     let destination = workspace.root.join(".isolock/runtimes").join(key.as_str());
     let entry = artifact
@@ -303,7 +319,7 @@ fn runtime(workspace: &Workspace, artifact: &Artifact) -> Result<PathBuf, String
             }
             archive::executable(&stage.path().join(&artifact.name))?;
         } else {
-            archive::unpack(&workspace.cas, artifact, stage.path())?;
+            archive::unpack(processes, &workspace.cas, artifact, stage.path())?;
         }
         archive::seal(stage.path(), key.as_str())?;
         archive::publish(stage, &destination)?;

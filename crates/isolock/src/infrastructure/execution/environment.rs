@@ -1,9 +1,9 @@
 //! Typed, composable child environment contributions. No process-environment reads.
 
+use crate::application::ports::ProcessRequest;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Default)]
 pub struct ChildEnvironment(BTreeMap<OsString, Option<OsString>>);
@@ -18,14 +18,19 @@ impl ChildEnvironment {
     pub fn include(&mut self, contribution: &impl EnvironmentContribution) {
         contribution.contribute(self);
     }
-    pub fn apply(&self, command: &mut Command) {
+    /// Projects the collected variables onto a process request.
+    pub fn project(&self, request: ProcessRequest) -> ProcessRequest {
+        let mut request = request;
         for (key, value) in &self.0 {
-            if let Some(value) = value {
-                command.env(key, value);
-            } else {
-                command.env_remove(key);
+            let key = key.to_string_lossy().into_owned();
+            match value {
+                Some(value) => {
+                    request = request.with_variable(key, value.to_string_lossy().into_owned());
+                }
+                None => request = request.without_variable(key),
             }
         }
+        request
     }
 }
 
@@ -131,16 +136,15 @@ mod tests {
             origin,
             inherited_no_proxy: "example.test",
         });
-        let mut command = Command::new("not-spawned");
-        environment.apply(&mut command);
-        let values = command
-            .get_envs()
-            .map(|(key, value)| {
-                (
-                    key.to_string_lossy().into_owned(),
-                    value.map(|value| value.to_string_lossy().into_owned()),
-                )
-            })
+        // Projection onto a request never spawns a process and never reads the
+        // ambient environment, so this stays a pure composition assertion.
+        let request = environment.project(ProcessRequest::new("not-spawned"));
+        let removed = request.removed.into_iter().map(|key| (key, None));
+        let values = request
+            .environment
+            .into_iter()
+            .map(|(key, value)| (key, Some(value)))
+            .chain(removed)
             .collect::<BTreeMap<_, _>>();
         assert_eq!(values["CARGO_HOME"].as_deref(), Some("/cargo home"));
         assert_eq!(values["PIXI_NO_CONFIG"], None);

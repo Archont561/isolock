@@ -54,6 +54,19 @@ Use cases depend on seven small traits, and every one is satisfied by a fake in 
   commands.
 - `Progress`, so a workflow reports lines without printing them.
 
+`ProcessRunner` is the eighth port, and the one every adapter shares. It models a program,
+its arguments, an optional working directory, environment removals and additions, a
+file-backed stdin, and three ways to consume the result: capture stdout, discard the streams,
+or hand stdout back as a reader. `SystemProcesses` is the only implementation, and
+`src/infrastructure/process.rs` is the only file in the crate that constructs a
+`std::process::Command`. Adapters such as the archive extractor, the Git transport, reviewed
+acquisition, and publication take a `&dyn ProcessRunner`, so a test can assert exactly what
+would have run.
+
+`isolock exec` uses the inheriting variant rather than the discarding one, because the
+child's own stdout and stderr must reach the operator unchanged. The child's exit code travels
+as data (`ChildOutcome`), so a signalled child still maps to `128 + signal` exactly as before.
+
 ## Composition and output
 
 `main` calls `isolock::run()`, which is `cli::run()`. That function builds one
@@ -66,12 +79,14 @@ renders the typed outcome in `cli/view.rs`; `cli/error.rs` maps `DomainError` on
 
 ## Enforced guardrails
 
-Four blocking `.alint.yml` rules fail the quality gate, not just the reviewer:
+Five blocking `.alint.yml` rules fail the quality gate, not just the reviewer:
 
 - `domain-has-no-adapters` forbids `clifacet`, `clap`, `figment`, and `crate::application`,
   `crate::cli`, or `crate::infrastructure` anywhere under `src/domain/`.
 - `application-has-no-clifacet-or-adapters` forbids `clifacet`, `clap`, `figment`,
   `crate::cli`, and `crate::infrastructure` under `src/application/`.
+- `processes-only-in-the-process-adapter` forbids `std::process::Command` anywhere under
+  `src/infrastructure/` except `process.rs`, so a new spawn site cannot bypass the port.
 - `application-has-no-process-or-output` forbids `std::process::Command`, `std::env::args`,
   and `std::env::current_dir` under `src/application/`.
 - `clifacet-only-in-the-cli-adapter` forbids `clifacet` and `clap` everywhere under

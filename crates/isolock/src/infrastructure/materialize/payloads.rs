@@ -1,6 +1,7 @@
 //! Immutable Cargo vendor, Python wheelhouse and JavaScript installation derivations.
 
 use super::archive;
+use crate::application::ports::ProcessRunner;
 use crate::infrastructure::profile_store::{self, Workspace};
 use isolock_cas::Sha256Digest;
 use isolock_plan::profile::{
@@ -11,7 +12,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn cargo(workspace: &Workspace, manifest: &ProfileManifest) -> Result<Option<PathBuf>, String> {
+pub fn cargo(
+    processes: &dyn ProcessRunner,
+    workspace: &Workspace,
+    manifest: &ProfileManifest,
+) -> Result<Option<PathBuf>, String> {
     let Some((key, _)) = manifest.cargo_payloads.first_key_value() else {
         return Ok(None);
     };
@@ -25,17 +30,22 @@ pub fn cargo(workspace: &Workspace, manifest: &ProfileManifest) -> Result<Option
         .iter()
         .filter(|artifact| artifact.kind == ArtifactKind::Cargo)
     {
-        cargo_package(workspace, artifact, stage.path())?;
+        cargo_package(processes, workspace, artifact, stage.path())?;
     }
     archive::seal(stage.path(), key)?;
     archive::publish(stage, &destination).map(Some)
 }
 
-fn cargo_package(workspace: &Workspace, artifact: &Artifact, target: &Path) -> Result<(), String> {
+fn cargo_package(
+    processes: &dyn ProcessRunner,
+    workspace: &Workspace,
+    artifact: &Artifact,
+    target: &Path,
+) -> Result<(), String> {
     let package = format!("{}-{}", artifact.name, artifact.version);
     relative_path(&package)?;
     let unpacked = tempfile::tempdir().map_err(|error| error.to_string())?;
-    archive::unpack(&workspace.cas, artifact, unpacked.path())?;
+    archive::unpack(processes, &workspace.cas, artifact, unpacked.path())?;
     let source = unpacked.path().join(&package);
     if !source.is_dir()
         || fs::read_dir(unpacked.path())
@@ -62,6 +72,7 @@ fn cargo_package(workspace: &Workspace, artifact: &Artifact, target: &Path) -> R
 }
 
 pub fn wheels(
+    _processes: &dyn ProcessRunner,
     workspace: &Workspace,
     manifest: &ProfileManifest,
 ) -> Result<Option<PathBuf>, String> {
@@ -107,6 +118,7 @@ pub fn wheels(
 }
 
 pub fn javascript(
+    processes: &dyn ProcessRunner,
     workspace: &Workspace,
     manifest: &ProfileManifest,
 ) -> Result<Option<PathBuf>, String> {
@@ -128,7 +140,7 @@ pub fn javascript(
     }
     let stage = stage(&destination)?;
     for artifact in &artifacts {
-        javascript_package(workspace, artifact, stage.path())?;
+        javascript_package(processes, workspace, artifact, stage.path())?;
     }
     for artifact in &artifacts {
         for installation in &artifact.destinations {
@@ -140,6 +152,7 @@ pub fn javascript(
 }
 
 fn javascript_package(
+    processes: &dyn ProcessRunner,
     workspace: &Workspace,
     artifact: &Artifact,
     target: &Path,
@@ -148,7 +161,7 @@ fn javascript_package(
         fs::read(workspace.cas.path(&artifact.digest)).map_err(|error| error.to_string())?;
     verify_integrity(artifact, &bytes)?;
     let unpacked = tempfile::tempdir().map_err(|error| error.to_string())?;
-    archive::unpack(&workspace.cas, artifact, unpacked.path())?;
+    archive::unpack(processes, &workspace.cas, artifact, unpacked.path())?;
     let package = unpacked.path().join("package");
     if !package.is_dir()
         || fs::read_dir(unpacked.path())

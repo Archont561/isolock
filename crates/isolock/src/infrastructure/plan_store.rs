@@ -20,6 +20,7 @@ impl LockGuard for Lease {}
 /// It adapts the existing `profile_store` primitives to the [`PlanStore`] port without
 /// reimplementing path layout, atomic writes, or reachability.
 pub struct FilePlanStore {
+    processes: Box<dyn crate::application::ports::ProcessRunner>,
     workspace: Workspace,
     settings: Settings,
 }
@@ -35,6 +36,7 @@ impl FilePlanStore {
     #[must_use]
     pub fn new(root: &Path, settings: &Settings) -> Self {
         Self {
+            processes: Box::new(crate::infrastructure::process::SystemProcesses::new()),
             workspace: Workspace::new(root, settings),
             settings: settings.clone(),
         }
@@ -152,8 +154,13 @@ impl PlanStore for FilePlanStore {
     }
 
     fn storage_identity(&self, locked: Option<&StorageIdentity>) -> UseCaseResult<StorageIdentity> {
-        transport::identity(&self.workspace.root, &self.settings.storage, locked)
-            .map_err(DomainError::new)
+        transport::identity(
+            self.processes.as_ref(),
+            &self.workspace.root,
+            &self.settings.storage,
+            locked,
+        )
+        .map_err(DomainError::new)
     }
 }
 

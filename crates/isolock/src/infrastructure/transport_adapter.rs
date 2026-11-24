@@ -1,9 +1,10 @@
 //! Adapts the directory/Git transport to the [`ArtifactTransport`] port.
 
 use crate::application::ports::{
-    ArtifactTransport, BlobStore, ProfileGraph, SourceSnapshot, UseCaseResult,
+    ArtifactTransport, BlobStore, ProcessRunner, ProfileGraph, SourceSnapshot, UseCaseResult,
 };
 use crate::domain::{DomainError, Settings};
+use crate::infrastructure::process::SystemProcesses;
 use crate::infrastructure::transport::{self, Snapshot};
 use isolock_cas::Sha256Digest;
 use isolock_plan::profile::StorageIdentity;
@@ -17,6 +18,7 @@ impl SourceSnapshot for FetchedSnapshot {}
 
 /// Retrieves reviewed manifests and payloads through the configured transport.
 pub struct FileTransport {
+    processes: Box<dyn ProcessRunner>,
     root: PathBuf,
     settings: Settings,
 }
@@ -26,6 +28,7 @@ impl FileTransport {
     #[must_use]
     pub fn new(root: &Path, settings: &Settings) -> Self {
         Self {
+            processes: Box::new(SystemProcesses::new()),
             root: root.into(),
             settings: settings.clone(),
         }
@@ -36,9 +39,14 @@ impl ArtifactTransport for FileTransport {
     type Snapshot = FetchedSnapshot;
 
     fn snapshot(&self, locked: Option<&StorageIdentity>) -> UseCaseResult<FetchedSnapshot> {
-        transport::snapshot(&self.root, &self.settings.storage, locked)
-            .map(FetchedSnapshot)
-            .map_err(DomainError::new)
+        transport::snapshot(
+            self.processes.as_ref(),
+            &self.root,
+            &self.settings.storage,
+            locked,
+        )
+        .map(FetchedSnapshot)
+        .map_err(DomainError::new)
     }
 
     fn fetch_graph(
@@ -47,7 +55,7 @@ impl ArtifactTransport for FileTransport {
         source: &FetchedSnapshot,
         digest: &Sha256Digest,
     ) -> UseCaseResult<ProfileGraph> {
-        transport::graph_for(store, &source.0, digest)
+        transport::graph_for(self.processes.as_ref(), store, &source.0, digest)
     }
 
     fn fetch_blobs(
@@ -56,7 +64,8 @@ impl ArtifactTransport for FileTransport {
         source: &FetchedSnapshot,
         manifests: &ProfileGraph,
     ) -> UseCaseResult<usize> {
-        transport::fetch_blobs(store, &source.0, manifests).map_err(DomainError::new)
+        transport::fetch_blobs(self.processes.as_ref(), store, &source.0, manifests)
+            .map_err(DomainError::new)
     }
 
     fn export(

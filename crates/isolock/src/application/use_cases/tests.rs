@@ -291,17 +291,23 @@ impl LegacyPlan for FakePlan {
 struct FakeRuntime {
     start_error: Option<&'static str>,
     shutdown_error: Option<&'static str>,
-    status: ExitCode,
+    code: i32,
 }
 
 struct FakeChild {
     shutdown_error: Option<&'static str>,
-    status: ExitCode,
+    code: i32,
 }
 
 impl ChildSession for FakeChild {
-    fn run(&self, _command: &crate::application::ports::ChildCommand) -> UseCaseResult<ExitCode> {
-        Ok(self.status)
+    fn run(
+        &self,
+        _command: &crate::application::ports::ChildCommand,
+    ) -> UseCaseResult<crate::application::ports::ChildOutcome> {
+        Ok(crate::application::ports::ChildOutcome {
+            code: Some(self.code),
+            signal: None,
+        })
     }
     fn close(self) -> UseCaseResult<()> {
         self.shutdown_error
@@ -333,7 +339,7 @@ impl ProxyRuntime for FakeRuntime {
         }
         Ok(FakeChild {
             shutdown_error: self.shutdown_error,
-            status: self.status,
+            code: self.code,
         })
     }
     fn bind(&self) -> UseCaseResult<FakeListener> {
@@ -345,7 +351,7 @@ fn runtime() -> FakeRuntime {
     FakeRuntime {
         start_error: None,
         shutdown_error: None,
-        status: ExitCode::SUCCESS,
+        code: 0,
     }
 }
 
@@ -598,7 +604,7 @@ fn collection_reports_what_it_would_reclaim_before_deleting() {
 #[test]
 fn exec_preserves_the_child_status_exactly() {
     let runtime = FakeRuntime {
-        status: ExitCode::from(7),
+        code: 7,
         ..runtime()
     };
     let outcome =
@@ -610,7 +616,7 @@ fn exec_preserves_the_child_status_exactly() {
 #[test]
 fn exec_keeps_the_child_status_when_the_proxy_fails_to_shut_down() {
     let runtime = FakeRuntime {
-        status: ExitCode::from(3),
+        code: 3,
         shutdown_error: Some("listener failed"),
         ..runtime()
     };
