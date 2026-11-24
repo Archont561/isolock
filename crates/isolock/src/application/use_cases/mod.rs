@@ -17,3 +17,6 @@ pub use configuration::{
 };
 pub use execution::{exec_child, serve_proxy, ExecOutcome};
 pub use plan::{check_airlock_plan, check_locked_profile, plan_profile, PlanOutcome};
+
+#[cfg(test)]
+mod tests;
