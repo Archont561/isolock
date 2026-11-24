@@ -22,21 +22,32 @@ crates/
 2. **Deterministic Digests**: Every artifact stored in CAS is verified against lowercase 64-hex SHA-256 hashes.
 3. **Locked Input Verification**: Profile checks compare reviewed configuration and input digests. Legacy plan checks compare an expected JSON plan against local CAS bytes; they do not resolve project dependencies.
 
+## Layers inside the binary
+
+`crates/isolock` is split into four layers with one enforced dependency rule:
+`domain <- application <- infrastructure`, with `cli` above the application layer as the
+`clifacet` adapter and the composition root. `main` only calls `isolock::run()`. See
+[layering and dependency rule](./architecture-layers.mdx) for the responsibilities, the ports,
+and the four `.alint.yml` guardrails that fail the quality gate on a violation.
+
 ## Command-line boundary
 
 `main` delegates to one non-interactive `clifacet::App::for_cli` pipeline. The root controller
 in `cli` is declared with `#[clifacet::app]`; its commands are methods in a
 `#[clifacet::commands]` implementation. Clifacet generates the command enum, collection,
 validation, dispatch, and lifecycle wiring, without application-authored request enums
-or per-command `Command`/`Handler` implementations.
+or per-command `Command`/`Handler` implementations. Each generated handler calls exactly one
+application use case and renders its typed outcome, so no handler reads configuration, plans a
+profile, or touches CAS, Git, or the proxy itself.
 
 `#[clifacet::group]` declares argument groups that retain command metadata such as the
 `bootstrap` alias, application version label, and opaque `exec` argument tail. The nested
 configuration controller uses `#[clifacet::group(commands)]` and
 `#[clifacet::commands(group)]`, with parsed overrides supplied through context extraction.
 Profile and proxy operations receive typed values and never reparse process arguments.
-The plan method selects profile planning or the legacy airlock check from those values
-and the presence of project configuration.
+`AppContext` resolves configuration once and constructs the reviewed adapters; the plan method
+selects profile planning or the legacy airlock check from those values and the presence of
+project configuration.
 
 Usage errors exit with status 2 and execution failures with status 1. Help and version
 requests exit successfully before loading configuration or creating application state.
@@ -63,9 +74,10 @@ legacy/shard conversion remain outside this boundary. See
 
 ## Execution and proxy ownership
 
-The CLI resolves configuration once at its Figment boundary. `proxy_cli` owns proxy
-orchestration; `ExecutionSession` owns proxy/Pixi-file lifetime; Cargo and Pixi generators,
-child-environment contributions, input loading, and exit mapping have separate modules.
+`infrastructure::config` is the only Figment boundary, and `cli::context` resolves it once.
+`infrastructure::proxy_runtime` implements the `ProxyRuntime` port; `ExecutionSession` owns
+proxy/Pixi-file lifetime; Cargo and Pixi generators, child-environment contributions, input
+loading, and exit mapping have separate modules.
 Core planning, CAS, and proxy crates never read operational process configuration.
 
 `default_adapters` owns registry composition, while the server owns loopback admission and

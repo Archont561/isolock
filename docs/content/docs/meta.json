@@ -9,6 +9,7 @@
     "profiles",
     "proxy",
     "quality",
-    "architecture"
+    "architecture",
+    "architecture-layers"
   ]
 }

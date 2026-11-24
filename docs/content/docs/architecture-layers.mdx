@@ -1,0 +1,81 @@
+---
+title: Layering and dependency rule
+description: The domain, application, adapter, and CLI layers of the isolock binary and the guardrails that keep them apart.
+---
+
+## Why the binary has layers
+
+Isolock's workflows used to live in modules that mixed three responsibilities: parsing
+arguments, deciding what a command means, and touching files, Git, and processes. The
+behaviour was correct, but the decisions were only reachable through a `clifacet` command
+tree, so they could only be tested by spawning the real binary.
+
+The binary now follows one dependency rule:
+
+```text
+domain <- application <- infrastructure
+               ^
+               |
+          cli (clifacet adapter, composition root)
+```
+
+An arrow means "may depend on". `domain` depends on nothing in this crate; `application`
+depends on `domain` and its own ports; `infrastructure` implements those ports; `cli` is the
+only module that names `clifacet`, and it is also the composition root.
+
+## What each layer owns
+
+| Layer | Path | Owns | Never contains |
+| --- | --- | --- | --- |
+| Domain | `src/domain/` | Reviewed workspace value types (`Settings`, `Storage`, `Transport`, `ProxyMode`, `ProxySettings`), the schema version, and typed `DomainError`. | `clifacet`, `clap`, `figment`, file or process access, or any outer module. |
+| Application | `src/application/ports/`, `src/application/use_cases/` | One function per workflow (`plan_profile`, `check_locked_profile`, `check_airlock_plan`, `fetch_profile`, `sync_profile`, `export_profile`, `seed_manifest`, `garbage_collect`, `exec_child`, `serve_proxy`, `check_configuration`, `show_configuration`, `explain_configuration`) plus the trait each one needs. | `clifacet`, `clap`, `figment`, `crate::cli`, `crate::infrastructure`, `std::env::args`, `current_dir`, printing, or spawning. |
+| Infrastructure | `src/infrastructure/` | The reviewed adapters: layered configuration loading, the plan store and CAS lease, directory and Git transport, materialization, ingestion and publication, the loopback proxy runtime, the legacy airlock diff. | `clifacet` or `clap`. |
+| CLI adapter | `src/cli/` | The `#[clifacet::app]`, `#[clifacet::commands]`, and `#[clifacet::group]` declarations, the `AppContext` composition root, outcome rendering, and failure mapping. | Plan diffing, CAS access, Git, transport, or configuration merging. |
+
+The reusable engines stay where they were: `isolock-core`, `isolock-cas`, `isolock-plan`, and
+`isolock-proxy` are still separate crates. `domain` re-uses `isolock_plan::Profile` and
+`isolock_proxy::ProxyLimits` instead of duplicating them, because both are already pure models.
+
+## Ports
+
+Use cases depend on seven small traits, and every one is satisfied by a fake in a unit test:
+
+- `ConfigurationProvider` with an associated `ConfigProvenance`, so `config explain` renders
+  a source without the use case seeing `figment::Figment`.
+- `PlanStore`, the locked-plan and CAS capability set, including `lease()` for the exclusive
+  mutation guard and `GarbageCollector` for the collector.
+- `ArtifactTransport` with a `SourceSnapshot`, plus `BlobStore` for the blob operations it
+  delegates back to the store.
+- `Materializer`, which installs a graph, renders the POSIX seed manifest, and reports the
+  host platform.
+- `ProxyRuntime` with `Listener` and `Session`, which own the interceptor and the child.
+- `Ingestion` with `ProfileSnapshot`, which imports reviewed bytes and publishes a batch.
+- `LegacyPlan`, which answers whether the legacy plan drifted and supplies the dispatch
+  commands.
+- `Progress`, so a workflow reports lines without printing them.
+
+## Composition and output
+
+`main` calls `isolock::run()`, which is `cli::run()`. That function builds one
+`clifacet::App`, and `AppContext` is constructed lazily from the parsed root controller, so
+help, version, and usage errors never resolve configuration, open the store, or bind a
+listener. Every handler converts options into application data, calls one use case, and
+renders the typed outcome in `cli/view.rs`; `cli/error.rs` maps `DomainError` onto
+`clifacet::Failure`. The child status `exec` must preserve travels through the context and the
+`after_success` hook, unchanged from the reviewed behaviour.
+
+## Enforced guardrails
+
+Four blocking `.alint.yml` rules fail the quality gate, not just the reviewer:
+
+- `domain-has-no-adapters` forbids `clifacet`, `clap`, `figment`, and `crate::application`,
+  `crate::cli`, or `crate::infrastructure` anywhere under `src/domain/`.
+- `application-has-no-clifacet-or-adapters` forbids `clifacet`, `clap`, `figment`,
+  `crate::cli`, and `crate::infrastructure` under `src/application/`.
+- `application-has-no-process-or-output` forbids `std::process::Command`, `std::env::args`,
+  and `std::env::current_dir` under `src/application/`.
+- `clifacet-only-in-the-cli-adapter` forbids `clifacet` and `clap` everywhere under
+  `crates/isolock/src/` except the `src/cli/` allowlist.
+
+Run `pixi run --as-is --offline tools quality lint` to check them locally; the rule ids are
+also visible in `alint list`.
