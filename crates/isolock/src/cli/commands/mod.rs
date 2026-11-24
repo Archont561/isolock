@@ -2,5 +2,6 @@
 
 pub mod configuration;
 pub mod ingestion;
+pub mod init;
 pub mod profiles;
 pub mod proxy;
