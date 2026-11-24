@@ -19,7 +19,7 @@ domain <- application <- infrastructure
           cli (clifacet adapter, composition root)
 ```
 
-An arrow means "may depend on". `domain` depends on nothing in this crate; `application`
+An arrow means "may depend on." `domain` depends on nothing in this crate; `application`
 depends on `domain` and its own ports; `infrastructure` implements those ports; `cli` is the
 only module that names `clifacet`, and it is also the composition root.
 
