@@ -72,7 +72,20 @@ impl ExecutionSession {
             pixi: None,
             environment: ChildEnvironment::default(),
         };
-        cargo::prepare(&config.cargo_home, &origin).map_err(SessionError::Cargo)?;
+        // A profile session keeps the profile's own Cargo home: it already carries the
+        // vendor replacement, and rewriting it would replace the reviewed sources with a
+        // live proxy registry.
+        match &config.profile {
+            Some(profile) => {
+                std::fs::create_dir_all(&profile.cargo_home).map_err(|source| {
+                    SessionError::Cargo(CargoConfigError::CreateHome {
+                        path: profile.cargo_home.clone(),
+                        source,
+                    })
+                })?;
+            }
+            None => cargo::prepare(&config.cargo_home, &origin).map_err(SessionError::Cargo)?,
+        }
         let pixi = PixiConfig::prepare(
             &origin,
             config.pixi_config.as_deref(),
@@ -80,7 +93,10 @@ impl ExecutionSession {
         )
         .map_err(SessionError::Pixi)?;
         session.environment.include(&CargoEnvironment {
-            home: &config.cargo_home,
+            home: config
+                .profile
+                .as_ref()
+                .map_or(&config.cargo_home, |profile| &profile.cargo_home),
             origin: &origin,
         });
         session.environment.include(&PixiEnvironment {

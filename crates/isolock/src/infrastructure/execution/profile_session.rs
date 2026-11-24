@@ -40,7 +40,7 @@ pub fn prepare(
     session.profile = Some(ProfileSession {
         profile: manifest.profile.clone(),
         platform: manifest.platform.clone(),
-        cargo_home: prefix.join("bin/cargo-home"),
+        cargo_home: prefix.join("cargo-home"),
         prefix,
         plan: plan(manifest)?,
     });
