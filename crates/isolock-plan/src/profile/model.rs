@@ -39,6 +39,35 @@ pub struct ToolArtifact {
     pub entry: Option<String>,
 }
 
+/// A reviewed pin for one Cargo git dependency.
+///
+/// `Cargo.lock` records a commit but never a content hash for a git package, so a
+/// plan cannot derive an artifact digest from the lockfile alone. The reviewer
+/// supplies the digest that `git archive <commit>` produces; because that output
+/// is reproducible, the pin is verifiable independently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct CargoGitPin {
+    /// The crate name as it appears in `Cargo.lock`.
+    pub name: String,
+    /// The crate version as it appears in `Cargo.lock`.
+    pub version: String,
+    /// Credential-free repository URL, which must equal the lockfile's git origin.
+    pub repository: String,
+    /// The full lowercase commit the lockfile resolved.
+    pub commit: String,
+    /// SHA-256 of `git archive` output for `commit`.
+    pub digest: Sha256Digest,
+}
+
+impl CargoGitPin {
+    /// The archive filename this pin is ingested and materialised under.
+    #[must_use]
+    pub fn filename(&self) -> String {
+        format!("{}-git.tar", self.name)
+    }
+}
+
 /// Every input affecting Cargo vendor derivation, independently of runtime provider.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
@@ -74,6 +103,8 @@ pub struct Profile {
     pub seeds: BTreeMap<String, ToolArtifact>,
     pub runtimes: BTreeMap<String, ToolArtifact>,
     pub cargo: CargoPolicy,
+    /// Reviewed pins for git dependencies. A lockfile git package without one fails closed.
+    pub cargo_git: Vec<CargoGitPin>,
     pub platform_tools: BTreeMap<String, PlatformTools>,
 }
 

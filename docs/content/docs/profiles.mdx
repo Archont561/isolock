@@ -306,11 +306,27 @@ being a security mechanism; the CAS digest is what actually pins the bytes here.
 `--download` is refused for git pins, because there is no URL to download: the bytes are
 exported from the repository.
 
-**Current scope.** Ingestion is implemented. Planning a profile from a lockfile that
-contains git packages, and materializing them for an offline build, are not yet wired;
-`plan` still fails closed for those lockfiles with
-`Cargo git dependencies must be vendored into a reviewed registry before locked planning`.
-The design for that remainder is in `docs/architecture/cargo-git-dependencies.md`.
+**Planning** needs the digest from a reviewer, because `Cargo.lock` carries a commit but no
+content hash for a git package. Declare the pin in the profile:
+
+```toml
+[[profiles.rust.cargo-git]]
+name = "lib"
+version = "0.1.0"
+repository = "https://example.test/org/lib"
+commit = "<full lowercase commit>"
+digest = "sha256-<digest of git archive for that commit>"
+```
+
+`plan` accepts the lockfile's git package only when a pin matches it on name, version,
+commit, and repository; anything else fails closed. A git package whose lockfile entry has no
+resolved `#commit` fragment is rejected as unpinnable, and a pin that matches no git
+dependency in the lockfile is an error rather than dead configuration.
+
+**Current scope.** Ingestion and planning are implemented. Materializing git dependencies
+into a vendor tree for an offline `cargo build` is not yet wired, so a profile that plans git
+artifacts does not yet build. The design for that remainder is in
+`docs/architecture/cargo-git-dependencies.md`.
 
 ## Garbage collection and CI
 

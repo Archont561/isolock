@@ -22,6 +22,7 @@ chaste.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+tempfile = "3.27.0"
 rstest.workspace = true
 rstest-bdd.workspace = true
 rstest-bdd-macros.workspace = true
