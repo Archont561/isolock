@@ -270,13 +270,39 @@ impl World {
         ]);
     }
 
+    /// Every restored Cargo package tree, ordered so tests never depend on
+    /// `read_dir` order. The vendor directory also holds a receipt file, so only
+    /// directories are returned.
     fn vendored(&self) -> Vec<PathBuf> {
         let vendor = self.root().join(".isolock/vendor/cargo");
-        let entry = fs::read_dir(&vendor).unwrap().next().unwrap().unwrap();
-        fs::read_dir(entry.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect()
+        let mut packages = Vec::new();
+        for key in fs::read_dir(&vendor).unwrap() {
+            for entry in fs::read_dir(key.unwrap().path()).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    packages.push(path);
+                }
+            }
+        }
+        packages.sort();
+        packages
+    }
+
+    /// The restored git dependency tree, selected by name rather than by position.
+    fn git_package(&self) -> PathBuf {
+        let packages = self
+            .vendored()
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("gitdep")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(packages.len(), 1, "one vendored git package: {packages:?}");
+        packages.into_iter().next().unwrap()
     }
 }
 
@@ -298,19 +324,7 @@ fn a_planned_git_dependency_materialises_into_a_vendored_tree() {
 
     // The vendor directory also holds the registry crates Cargo needs; the git
     // dependency is the commit-addressed one.
-    let packages = world.vendored();
-    let packages = packages
-        .iter()
-        .filter(|path| {
-            path.file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("gitdep")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(packages.len(), 1, "one vendored git package");
-    let package = packages[0];
+    let package = world.git_package();
     // The directory is commit-addressed, so two commits never share a tree.
     assert!(
         package
@@ -386,8 +400,7 @@ fn the_vendored_tree_is_detected_when_modified() {
         "--offline",
     ]);
 
-    let packages = world.vendored();
-    let package = packages.into_iter().next().unwrap();
+    let package = world.git_package();
     fs::write(
         package.join("src/lib.rs"),
         "pub fn answer() -> u32 { 99 }\n",
