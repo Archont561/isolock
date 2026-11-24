@@ -25,7 +25,7 @@ generator built before the workflow works would template a shape that does not r
   against the loopback proxy (session wiring landed; the end-to-end proof is ISO-36).
 - [x] `isolock init` produces a repo whose generated config validates *and* whose plan is
   not dead on arrival; a placeholder digest is rejected, never silently accepted.
-- [ ] Adoption guidance carries the boilerplate that a generator would emit, and a
+- [x] Adoption guidance carries the boilerplate that a generator would emit, and a
   maintainer can follow it without reading the source.
 
 ## Scope boundaries
@@ -41,7 +41,7 @@ manifest *template*, but it must never invent a digest or fabricate a pin.
 - **ISO-32**: Reject sentinel digests in typed configuration - Done.
 - **ISO-33**: Profile-aware `exec` - Done.
 - **ISO-34**: `isolock init` minimal-setup scaffolding - Done.
-- **ISO-35**: Adoption scaffolding guidance - To Do (ISO-34 is done).
+- **ISO-35**: Adoption scaffolding guidance - Done.
 - **ISO-36**: Prove `cargo add`/`pixi add` through the loopback proxy - Done.
 
 ## Status
@@ -56,6 +56,7 @@ is a vendored `directory` source, not a proxy round trip: the profile's
 `cargo-home/config.toml` replaces `crates-io` with `isolock-vendor` before the proxy index
 variable is consulted. That exit criterion is therefore met in the stronger sense, since a
 directory source cannot reach the network at all. `pixi add` does resolve through the
-generated channel. ISO-30 and ISO-31 (git dependency correctness) and ISO-35 (adoption
-guidance) remain open. ISO-32 landed after them, closing the last validation trap that
+generated channel. ISO-35 published the adoption guide as a documented template rather
+than a generator. Only ISO-30 and ISO-31 (git dependency correctness, both behind the
+ISO-29 release gate) remain open. ISO-32 landed after them, closing the last validation trap that
 scaffolding would otherwise have emitted.
