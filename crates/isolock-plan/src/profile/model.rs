@@ -175,6 +175,9 @@ pub struct CargoDerivation {
     pub lock_digest: Sha256Digest,
     pub platform: String,
     pub policy: CargoPolicy,
+    /// Reviewed git pins, so a derivation never covers two different commits.
+    #[serde(default)]
+    pub git: Vec<CargoGitPin>,
 }
 
 /// Immutable manifest. Operational paths, ports and concurrency are intentionally absent.

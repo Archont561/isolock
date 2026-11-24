@@ -323,10 +323,22 @@ commit, and repository; anything else fails closed. A git package whose lockfile
 resolved `#commit` fragment is rejected as unpinnable, and a pin that matches no git
 dependency in the lockfile is an error rather than dead configuration.
 
-**Current scope.** Ingestion and planning are implemented. Materializing git dependencies
-into a vendor tree for an offline `cargo build` is not yet wired, so a profile that plans git
-artifacts does not yet build. The design for that remainder is in
-`docs/architecture/cargo-git-dependencies.md`.
+**Materialization** unpacks the exported commit tree into a directory named
+`<crate>-<commit prefix>` under the vendor directory, and emits a Cargo `[source]` stanza
+that replaces `git+<repository>?rev=<commit>` with that tree. The directory is
+commit-addressed, so two commits of one crate never share a vendored tree, and the
+derivation identity includes the pins for the same reason.
+
+Cargo requires a `.cargo-checksum.json` in every vendored directory and fails without one,
+so one is written with real per-file digests and `"package": null`. That map is not a
+security boundary: its own comment says it only guards against accidental modification, and
+it cannot tell tampered bytes from the pinned commit. The actual anchor is the CAS digest,
+verified before the tree is materialized, plus the sealing receipt that refuses to reuse a
+tree which no longer matches its derivation.
+
+A profile that plans git dependencies therefore builds offline with the origin repository
+unreachable. Cargo's own `[patch]` cannot do this: it still resolves the original git source
+first. See `docs/architecture/cargo-git-dependencies.md` for why each alternative fails.
 
 ## Garbage collection and CI
 

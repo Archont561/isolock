@@ -166,6 +166,9 @@ fn leaf(
                 .clone(),
             platform: request.platform.into(),
             policy: profile.cargo.clone(),
+            // Two commits of one crate must never share a vendor tree, so the
+            // reviewed git pins are part of the derivation identity.
+            git: profile.cargo_git.clone(),
         };
         manifest
             .cargo_payloads

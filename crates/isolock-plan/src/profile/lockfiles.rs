@@ -236,6 +236,7 @@ fn git_artifact(
         source,
         metadata: serde_json::json!({
             "origin": "git",
+            "name": pin.name,
             "repository": pin.repository,
             "revision": pin.commit,
             "reference": reference,
