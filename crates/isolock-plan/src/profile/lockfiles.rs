@@ -2,7 +2,7 @@
 
 use super::model::*;
 use isolock_cas::Sha256Digest;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -115,23 +115,31 @@ fn pixi_artifact(
     })
 }
 
-pub(super) fn cargo(source: &str, platform: &str) -> Result<Vec<Artifact>, String> {
+pub(super) fn cargo(
+    source: &str,
+    platform: &str,
+    pins: &[CargoGitPin],
+) -> Result<Vec<Artifact>, String> {
     let lock: cargo_lock::Lockfile = source
         .parse()
         .map_err(|_| "invalid Cargo.lock".to_owned())?;
     let mut artifacts = Vec::new();
+    let mut used = BTreeSet::new();
     for package in lock.packages {
         let Some(origin) = package.source else {
             continue;
         };
+        let name = package.name.to_string();
+        let version = package.version.to_string();
         if !origin.is_registry() {
-            return Err("Cargo git dependencies must be vendored into a reviewed registry before locked planning".into());
+            let pin = git_pin(&origin, &name, &version, pins)?;
+            used.insert(pin.name.clone());
+            artifacts.push(git_artifact(pin, &origin, platform)?);
+            continue;
         }
         let checksum = package
             .checksum
             .ok_or("registry Cargo packages require checksums")?;
-        let name = package.name.to_string();
-        let version = package.version.to_string();
         // Registry identity stays in provenance; transport retrieves by digest, never this URL.
         let source = origin.to_string();
         public_source(&source)?;
@@ -148,7 +156,107 @@ pub(super) fn cargo(source: &str, platform: &str) -> Result<Vec<Artifact>, Strin
             destinations: Vec::new(),
         });
     }
+    if let Some(unused) = pins.iter().find(|pin| !used.contains(&pin.name)) {
+        return Err(format!(
+            "reviewed Cargo git pin for {} is not a git dependency of this lockfile",
+            unused.name
+        ));
+    }
     Ok(artifacts)
+}
+
+/// Finds the reviewed pin that matches one lockfile git package, fail-closed.
+///
+/// The commit and repository must both agree with the lockfile: a pin for a
+/// different commit would ship different bytes than the lockfile describes.
+fn git_pin<'a>(
+    origin: &cargo_lock::SourceId,
+    name: &str,
+    version: &str,
+    pins: &'a [CargoGitPin],
+) -> Result<&'a CargoGitPin, String> {
+    let commit = full_commit(
+        origin
+            .precise()
+            .ok_or("Cargo git dependencies must be reviewed with a full commit in Cargo.lock")?,
+    )?;
+    let repository = origin.url().as_str().trim_end_matches('/');
+    let candidates = pins
+        .iter()
+        .filter(|pin| pin.name == name && pin.version == version)
+        .collect::<Vec<_>>();
+    let [pin] = candidates.as_slice() else {
+        return Err(format!(
+            "Cargo git dependency {name} {version} requires exactly one reviewed pin"
+        ));
+    };
+    if pin.commit != commit {
+        return Err(format!(
+            "reviewed Cargo git pin for {name} does not match the lockfile commit"
+        ));
+    }
+    if pin.repository.trim_end_matches('/') != repository {
+        return Err(format!(
+            "reviewed Cargo git pin for {name} does not match the lockfile repository"
+        ));
+    }
+    Ok(pin)
+}
+
+/// Builds the artifact for one reviewed git pin.
+///
+/// `source` is the bare repository URL. Cargo's own source key is
+/// `git+<repository>?rev=<commit>`, but `public_source` — which exists to reject
+/// embedded credentials — refuses `?` and `#` outright, and the same check runs
+/// again over every artifact when a manifest is validated. The reference and
+/// commit live in `metadata`, and every `?`/`#` value is rejected as a lockfile
+/// reference below, so the query could never carry anything the metadata omits.
+fn git_artifact(
+    pin: &CargoGitPin,
+    origin: &cargo_lock::SourceId,
+    platform: &str,
+) -> Result<Artifact, String> {
+    let reference = origin
+        .git_reference()
+        .and_then(|reference| reference.pretty_ref(true))
+        .map(|reference| reference.to_string())
+        .ok_or("Cargo git dependencies require a reviewed lockfile reference")?;
+    if reference.contains(['?', '#']) {
+        return Err("Cargo git dependencies require a resolvable lockfile reference".into());
+    }
+    let source = pin.repository.trim_end_matches('/').to_owned();
+    public_source(&source)?;
+    Ok(Artifact {
+        kind: ArtifactKind::Cargo,
+        filename: pin.filename(),
+        name: pin.name.clone(),
+        version: pin.version.clone(),
+        platform: platform.into(),
+        digest: pin.digest.clone(),
+        source,
+        metadata: serde_json::json!({
+            "origin": "git",
+            "repository": pin.repository,
+            "revision": pin.commit,
+            "reference": reference,
+        }),
+        integrity: None,
+        destinations: Vec::new(),
+    })
+}
+
+/// Rejects anything that is not already a full lowercase commit SHA.
+fn full_commit(value: &str) -> Result<String, String> {
+    if !matches!(value.len(), 40 | 64)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(
+            "Cargo git dependencies require a full lowercase commit, not a tag or branch".into(),
+        );
+    }
+    Ok(value.to_owned())
 }
 
 fn catalog(

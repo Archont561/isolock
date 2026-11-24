@@ -306,11 +306,18 @@ impl Fixture {
         }
         fs::write(
             self.root.join("isolock.toml"),
-            toml::to_string(&Configuration {
-                schema_version: 1,
-                profiles: &self.profiles,
-                storage,
-            })
+            // Serialise through `Value` so tables are emitted after scalars.
+            // A `Profile` now contains arrays of tables (`cargo-git`), and
+            // struct-order serialisation would put the parent `storage` table
+            // after them, which TOML forbids.
+            toml::to_string(
+                &toml::Value::try_from(&Configuration {
+                    schema_version: 1,
+                    profiles: &self.profiles,
+                    storage,
+                })
+                .unwrap(),
+            )
             .unwrap(),
         )
         .unwrap();

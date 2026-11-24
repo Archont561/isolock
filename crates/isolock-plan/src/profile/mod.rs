@@ -152,9 +152,11 @@ fn leaf(
     }
     if let Some(path) = &profile.cargo_lock {
         let source = lockfiles::input(request.root, path, &mut manifest.inputs)?;
-        manifest
-            .artifacts
-            .extend(lockfiles::cargo(&source, request.platform)?);
+        manifest.artifacts.extend(lockfiles::cargo(
+            &source,
+            request.platform,
+            &profile.cargo_git,
+        )?);
         let derivation = CargoDerivation {
             schema_version: PROFILE_SCHEMA_VERSION,
             lock_digest: manifest
