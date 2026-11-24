@@ -264,12 +264,53 @@ The locked materializers/package-execution paths themselves never resolve upstre
 
 ### Explicit v1 boundaries
 
-Planning/materialization fails closed for Cargo git dependencies, Pixi source packages,
-PyPI sdists/unresolved markers, Yarn repacked ZIP-only integrity, unsafe archive links or
-special nodes, and ambiguous package/executable collisions. Use reviewed registry crates,
+Planning/materialization fails closed for Pixi source packages, PyPI sdists/unresolved
+markers, Yarn repacked ZIP-only integrity, unsafe archive links or special nodes, and
+ambiguous package/executable collisions. Use reviewed registry crates,
 platform-resolved wheels, tarball locks, and **link-free relocatable** runtime/seed
 archives (dereference safe links when preparing those artifacts). No implicit online build,
 post-link/lifecycle script, arbitrary archive path, or incompatible host fallback is used.
+
+### Cargo git dependencies
+
+A Cargo git dependency has no `checksum` in `Cargo.lock`, so the reviewed pin is the
+SHA-256 of `git archive` output for one resolved commit. Add a `git` object to its
+ingestion manifest artifact:
+
+```json
+{
+  "registry": "cargo",
+  "name": "lib",
+  "version": "0.1.0",
+  "sha256": "<digest of git archive for the commit>",
+  "filename": "lib-git.tar",
+  "source": "https://example.test/org/lib",
+  "git": {
+    "repository": "https://example.test/org/lib",
+    "revision": "<tag, branch, or commit>",
+    "commit": "<full lowercase commit SHA>"
+  }
+}
+```
+
+`ingest` fetches that revision shallowly into a disposable bare repository, exports the
+resolved commit, and refuses the batch unless every reviewed field agrees: the revision
+must resolve to exactly `commit`, and the archive must hash to exactly `sha256`. Both are
+re-checked before CAS is touched, so a moved tag or a rewritten branch fails closed.
+
+`git archive` is reproducible: it stamps entries with the commit's own timestamp, not the
+wall clock, so a reviewer who trusts a commit SHA can predict the digest on any machine and
+any day. Cargo's own `.cargo-checksum.json` for a vendored git source explicitly disclaims
+being a security mechanism; the CAS digest is what actually pins the bytes here.
+
+`--download` is refused for git pins, because there is no URL to download: the bytes are
+exported from the repository.
+
+**Current scope.** Ingestion is implemented. Planning a profile from a lockfile that
+contains git packages, and materializing them for an offline build, are not yet wired;
+`plan` still fails closed for those lockfiles with
+`Cargo git dependencies must be vendored into a reviewed registry before locked planning`.
+The design for that remainder is in `docs/architecture/cargo-git-dependencies.md`.
 
 ## Garbage collection and CI
 
