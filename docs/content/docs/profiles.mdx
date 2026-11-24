@@ -20,11 +20,45 @@ configured storage snapshot.
 The canonical planner uses `rattler_lock`, `cargo-lock`, and `chaste`. It receives a typed
 request, never reads configuration or environment variables, and never runs a solver.
 
+## Start from `init`
+
+```sh
+isolock init --profile dev --platform linux-64
+```
+
+That writes two files:
+
+- `isolock.toml`: a typed configuration with one leaf profile. Its only pin describes the
+  running `isolock` executable, because those bytes are genuinely on disk and the digest is
+  computed, not guessed.
+- `isolock.ingest.json`: `{"schema-version": 1, "artifacts": []}`. The reviewed manifest is
+  empty on purpose.
+
+Nothing is fabricated. A digest names bytes a reviewer holds, so a generated one would be a
+placeholder, and validation rejects placeholders outright:
+
+```console
+$ isolock config check
+isolock: tool isolock has a placeholder digest that no reviewed artifact can produce
+```
+
+An existing file is never overwritten unless you pass `--force`, and the refusal names every
+conflicting path at once:
+
+```console
+$ isolock init
+isolock: refusing to overwrite existing isolock.toml, isolock.ingest.json (pass --force to replace)
+```
+
+From there, fill the reviewed fields and run the four steps below. `init` does not generate
+`bootstrap.sh`; `seed-manifest` already derives that from the locked plan.
+
 ## Declare intent
 
-Copy this skeleton into the project root as `isolock.toml`. Replace the zero digests,
-versions, and public provenance URLs with reviewed artifact information **before use**.
-These placeholders do not grant trust or enable a host-tool fallback.
+The skeleton below shows a fuller profile. Copy it into `isolock.toml` and replace every
+digest, version, and provenance URL with reviewed artifact information **before use**. The
+repeated `<sha256>` marks where a real digest goes; a zero digest will not pass
+`config check`.
 
 ```toml
 schema-version = 1
@@ -52,7 +86,7 @@ all-features = false
 [profiles.rust-pixi.seeds.isolock]
 version = "0.1.0"
 platform = "linux-64"
-digest = "0000000000000000000000000000000000000000000000000000000000000000"
+digest = "<sha256 of the reviewed bytes>"
 filename = "isolock-linux-64"
 source = "https://github.com/example/releases/isolock-linux-64"
 format = "raw"
@@ -60,12 +94,73 @@ format = "raw"
 [profiles.rust-pixi.seeds.pixi]
 version = "0.84.2"
 platform = "linux-64"
-digest = "0000000000000000000000000000000000000000000000000000000000000000"
+digest = "<sha256 of the reviewed bytes>"
 filename = "pixi-linux-64.tar.gz"
 source = "https://github.com/example/releases/pixi-linux-64.tar.gz"
 format = "tar-gz"
 entry = "pixi"
 ```
+
+### Artifact template for each pin kind
+
+`init` leaves `isolock.ingest.json` empty because the two pin kinds need different fields,
+and only a reviewer knows which one an artifact is.
+
+**Registry pin.** `sha256` is the digest of the archive you downloaded:
+
+```json
+{
+  "schema-version": 1,
+  "artifacts": [
+    {
+      "registry": "cargo",
+      "name": "serde",
+      "version": "1.0.0",
+      "sha256": "<sha256 of serde-1.0.0.crate>",
+      "filename": "serde-1.0.0.crate",
+      "source": "https://static.crates.io/crates/serde/serde-1.0.0.crate"
+    }
+  ]
+}
+```
+
+**Git pin.** A git dependency has no `checksum` in `Cargo.lock`, so `sha256` is the digest of
+`git archive` for one resolved commit, and `git` records what that commit is. `revision` is
+what you reviewed (a tag, branch, or abbreviated commit); `commit` is the full SHA it must
+resolve to. Requiring both means a moving tag cannot silently change which tree is ingested:
+
+```json
+{
+  "schema-version": 1,
+  "artifacts": [
+    {
+      "registry": "cargo",
+      "name": "lib",
+      "version": "0.1.0",
+      "sha256": "<sha256 of git archive for the commit>",
+      "filename": "lib-git.tar",
+      "source": "https://example.test/org/lib",
+      "git": {
+        "repository": "https://example.test/org/lib",
+        "revision": "v0.1.0",
+        "commit": "<full 40- or 64-character commit SHA>"
+      }
+    }
+  ]
+}
+```
+
+The ordering matters. `ingest` verifies bytes into the CAS, `plan` locks them, and `sync`
+materializes the profile:
+
+```sh
+isolock ingest --manifest isolock.ingest.json --artifacts ./originals
+isolock plan --profile dev --platform linux-64
+isolock sync --profile dev --platform linux-64 --offline
+```
+
+`--offline` reads the verified CAS directly, so a locally reviewed project needs no remote.
+Omit it once `storage.source` points at a published snapshot.
 
 A standalone profile replaces the Pixi selection with `provider = "standalone"` and a
 `runtimes.rust`, `runtimes.python`, `runtimes.node`, or `runtimes.bun` tool declaration.
