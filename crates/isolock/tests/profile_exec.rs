@@ -265,3 +265,40 @@ fn an_unmaterialized_profile_fails_closed_instead_of_using_the_host_toolchain() 
     assert!(stderr.contains("is not materialized"), "{stderr}");
     assert!(stderr.contains("isolock sync"), "{stderr}");
 }
+
+#[test]
+fn an_unusable_profile_cargo_home_fails_closed() {
+    let world = World::new();
+    world.materialize();
+    // The profile's Cargo home is sealed state. If it cannot be used, the session must
+    // report that rather than silently falling back to the ambient Cargo home.
+    let profiles = world.root().join(".isolock/profiles");
+    for entry in fs::read_dir(&profiles).unwrap().flatten() {
+        for platform in fs::read_dir(entry.path()).unwrap().flatten() {
+            for digest in fs::read_dir(platform.path()).unwrap().flatten() {
+                let home = digest.path().join("cargo-home");
+                if home.is_dir() {
+                    fs::remove_dir_all(&home).unwrap();
+                }
+                fs::write(&home, b"not a directory").unwrap();
+            }
+        }
+    }
+
+    let output = world.run(&[
+        "exec",
+        "--profile",
+        PROFILE,
+        "--platform",
+        PLATFORM,
+        "--",
+        "cargo",
+    ]);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot create Cargo home"),
+        "expected a profile Cargo home error, got: {stderr}"
+    );
+    assert!(stderr.contains("cargo-home"), "{stderr}");
+}
