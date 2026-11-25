@@ -28,6 +28,19 @@ tests:
       - isolock --version
       - isolock --help
       - isolock config check
+      # Representative documented command: the drift verdict, hermetic on an empty plan.
+      - if: unix
+        then: |
+          tmp=$(mktemp -d)
+          printf '{"artifacts":[]}' > "$tmp/plan.json"
+          ISOLOCK_PLAN="$tmp/plan.json" ISOLOCK_CAS_DIR="$tmp/cas" HOME="$tmp" isolock plan --ci | grep -q "Verdict: ALL DEPENDENCIES SATISFIED"
+      - if: win
+        then: |
+          mkdir %TEMP%\isolock-recipe-test
+          echo {"artifacts":[]} > %TEMP%\isolock-recipe-test\plan.json
+          set ISOLOCK_PLAN=%TEMP%\isolock-recipe-test\plan.json
+          set ISOLOCK_CAS_DIR=%TEMP%\isolock-recipe-test\cas
+          isolock plan --ci | findstr /C:"Verdict: ALL DEPENDENCIES SATISFIED"
 
 about:
   summary: Dedicated dependency airlock manager

@@ -24,8 +24,14 @@ the release record captures the candidate commit and its run URL instead.
 
 The native artifact smoke check validates that each released standalone CLI can start,
 parse commands, validate default configuration, and check an empty legacy plan on its
-host. The Conda recipe test checks package installation and CLI startup. These checks do
-not assert native profile materialization on macOS or Windows.
+host. The Conda recipe test checks package installation, CLI startup, and the `plan --ci`
+drift verdict. These checks do not assert native profile materialization on macOS or Windows.
+
+Archive and package integrity is enforced before anything is published. `release assemble-candidate`
+verifies every staged `SHA256SUMS`, rejects a manifest that names a missing file or a digest
+that does not match the bytes, and re-verifies the assembled bundle. A mismatch fails the job,
+which is covered by regression tests rather than assumed. Published checksums are reproducible:
+recomputing the archive digest independently matches the manifest entry.
 
 ## Host and toolchain requirements
 
@@ -55,6 +61,13 @@ profile materialization is not claimed for macOS or Windows. Git transport may t
 broader snapshot before retaining only the selected closure in the local CAS. Automatic
 legacy/sharded storage migration, old-epoch deletion, and connected proxy-miss acquisition
 are not part of this release contract.
+
+Release targets are exactly three: `linux-x86_64` (GNU), `macos-arm64` (Apple silicon), and
+`windows-x86_64` (MSVC). Every other target is unsupported for 0.1, including Linux `aarch64`,
+macOS `x86_64` on Intel hardware, and Windows GNU builds. A successful cross-compilation is not
+acceptance evidence: each claimed target is built on its own native runner and smoke-tested
+there, and `release host-smoke` refuses to run when the runner's host triple differs from the
+target triple. No target is claimed that lacks a native runner.
 
 Follow the [release validation checklist](./release-checklist.mdx) for candidate evidence,
 non-publishing rehearsal, and the explicit GO/NO-GO process.
