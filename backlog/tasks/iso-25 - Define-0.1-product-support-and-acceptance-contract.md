@@ -62,3 +62,14 @@ Adding the cargo journey takes `rust-standalone` to roughly 8.6 minutes locally 
 
 AC #4 stays open. A release-scope review is a human sign-off, and marked complete without one
 it would be exactly the kind of unsupported claim this contract exists to prevent.
+
+The review is drafted as `backlog/decisions/decision-8 - 0.1-release-scope-review.md` and
+status `proposed`. It records the approved claim set, the accepted exclusions, the
+consequences of being wrong, and an approval block whose fields are explicitly `pending`
+rather than pre-filled. A machine-checkable section lists what was verified while drafting:
+every cited test resolves to a real function, every cited runner exists as a CI job, and the
+cross-compilation exclusion is enforced rather than merely documented.
+
+`docs/content/docs/release-checklist.mdx` now requires decision-8 to be signed before ISO-29
+may record a GO, so the gate cannot close around an unsigned review. AC #4 closes when a
+maintainer fills the approval block; nothing in the repository does it on their behalf.

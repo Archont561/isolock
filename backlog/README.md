@@ -25,7 +25,7 @@ backlog/
 ├── docs/                      # Architectural documentation
 │   └── doc-1 through doc-9
 ├── decisions/                 # Architecture Decision Records (ADRs)
-│   └── decision-1 through decision-7
+│   └── decision-1 through decision-8
 └── features/                  # Executed contracts and tagged deferred specifications
 ```
 
@@ -94,6 +94,7 @@ project lockfiles.
 - **[decision-5: Brotli Compression for Proxy Metadata and Raw Binary Shards](decisions/decision-5%20-%20Brotli-compression-for-proxy-metadata-and-preservation-of-raw-binary-shards.md)**
 - **[decision-6: Profile-Scoped Materialization and Seed Tools](decisions/decision-6%20-%20Profile-scoped-materialization-and-seed-tools.md)**
 - **[decision-7: Typed Layered Configuration with Figment](decisions/decision-7%20-%20Typed-layered-configuration-with-figment.md)**
+- **[decision-8: 0.1 Release Scope Review](decisions/decision-8%20-%200.1-release-scope-review.md)**
 
 ---
 
