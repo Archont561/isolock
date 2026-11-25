@@ -2,6 +2,7 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Fixture setup failures must fail the test.
 
+use isolock_cas::Sha256Digest;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -139,5 +140,156 @@ fn the_pull_request_pipeline_builds_the_documentation() {
     assert!(
         workflow.contains("sh tools/run docs verify"),
         "the CI workflow must run the documentation build"
+    );
+}
+
+/// Build a staged artifact directory the way `release stage-binaries` lays one out.
+fn stage_artifact(directory: &Path, name: &str, contents: &[u8]) -> String {
+    fs::create_dir_all(directory).unwrap();
+    let file = directory.join(name);
+    fs::write(&file, contents).unwrap();
+    let digest = Sha256Digest::from_bytes(contents);
+    fs::write(
+        directory.join("SHA256SUMS"),
+        format!("{}  {name}\n", digest.as_str()),
+    )
+    .unwrap();
+    digest.as_str().to_owned()
+}
+
+#[test]
+fn release_rejects_a_checksum_that_does_not_match_the_artifact() {
+    // The whole point of publishing SHA256SUMS is that a mismatch stops the job. Prove the
+    // gate fires rather than trusting that it is wired up.
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("binaries");
+    stage_artifact(&directory, "isolock-linux-x86_64", b"real artifact bytes");
+    fs::write(
+        directory.join("SHA256SUMS"),
+        format!("{}  isolock-linux-x86_64\n", "0".repeat(64)),
+    )
+    .unwrap();
+
+    let output = Command::new("python3")
+        .arg("-B")
+        .arg(tools_cli())
+        .args([
+            "release",
+            "verify-binary",
+            "--directory",
+            directory.to_str().unwrap(),
+            "--archive-name",
+            "absent.tar.gz",
+            "--binary",
+            "isolock",
+        ])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("checksum mismatch for") && stderr.contains("isolock-linux-x86_64"),
+        "the failure names the artifact: {stderr}"
+    );
+}
+
+#[test]
+fn release_rejects_a_checksum_manifest_naming_an_absent_artifact() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("binaries");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("SHA256SUMS"),
+        format!("{}  isolock-linux-x86_64.tar.gz\n", "a".repeat(64)),
+    )
+    .unwrap();
+
+    let output = Command::new("python3")
+        .arg("-B")
+        .arg(tools_cli())
+        .args([
+            "release",
+            "verify-binary",
+            "--directory",
+            directory.to_str().unwrap(),
+            "--archive-name",
+            "isolock-linux-x86_64.tar.gz",
+            "--binary",
+            "isolock",
+        ])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing file"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn release_rejects_a_staging_directory_without_a_checksum_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("binaries");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("isolock-linux-x86_64.tar.gz"), b"bytes").unwrap();
+
+    let output = Command::new("python3")
+        .arg("-B")
+        .arg(tools_cli())
+        .args([
+            "release",
+            "verify-binary",
+            "--directory",
+            directory.to_str().unwrap(),
+            "--archive-name",
+            "isolock-linux-x86_64.tar.gz",
+            "--binary",
+            "isolock",
+        ])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing checksum manifest"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn conda_recipe_runs_a_documented_command_not_only_startup_checks() {
+    // The install route has to prove more than that the package starts. `plan --ci` is the
+    // drift verdict documented in the getting-started guide, so the recipe must run it.
+    let recipe: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../recipe.yaml")).expect("recipe yaml parses");
+    let script = recipe["tests"][0]["script"]
+        .as_sequence()
+        .expect("recipe declares a test script");
+    let rendered = script
+        .iter()
+        .map(|entry| serde_yaml::to_string(entry).unwrap())
+        .collect::<String>();
+    for required in [
+        "isolock --version",
+        "isolock --help",
+        "isolock config check",
+    ] {
+        assert!(rendered.contains(required), "recipe dropped {required}");
+    }
+    assert!(
+        rendered.contains("isolock plan --ci"),
+        "the recipe must run a representative documented command: {rendered}"
+    );
+    assert!(
+        rendered.contains("Verdict: ALL DEPENDENCIES SATISFIED"),
+        "the representative command must assert its verdict: {rendered}"
     );
 }
