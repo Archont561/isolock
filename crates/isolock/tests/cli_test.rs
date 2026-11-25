@@ -810,3 +810,184 @@ fn bdd_plan_drift_formats_grouped_pypi_command(world: PlanDispatchWorld) {
 fn bdd_plan_drift_groups_commands_by_registry(world: PlanDispatchWorld) {
     let _ = world;
 }
+/// Owns a spawned `serve` process so a failing assertion cannot leave it listening.
+struct ServeProcess(std::process::Child);
+
+impl Drop for ServeProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Starts `isolock serve` on an ephemeral port and returns its base address.
+fn start_serve(plan: &std::path::Path, cas: &std::path::Path) -> (ServeProcess, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_isolock"))
+        .args(["serve", "--port", "0"])
+        .env("ISOLOCK_PLAN", plan)
+        .env("ISOLOCK_CAS_DIR", cas)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("starts isolock serve");
+    let stdout = child.stdout.take().expect("serve has captured stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .expect("serve prints its bound URL");
+    let address = line
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("http://"))
+        .expect("serve output contains the listener address")
+        .to_owned();
+    (ServeProcess(child), address)
+}
+
+/// Writes a one-artifact reviewed plan and returns the plan path and artifact digest.
+fn write_single_pypi_plan(
+    directory: &std::path::Path,
+    package: &[u8],
+    filename: &str,
+) -> (PathBuf, Sha256Digest) {
+    let digest = Sha256Digest::from_bytes(package);
+    let plan_path = directory.join("plan.json");
+    fs::write(
+        &plan_path,
+        serde_json::to_vec(&serde_json::json!({
+            "artifacts": [{
+                "name": "fixture", "version": "2.0.0", "registry": "Pypi",
+                "digest": digest.as_str()
+            }],
+            "artifact_metadata": [{
+                "filename": filename,
+                "registry_metadata": {"name": "fixture", "version": "2.0.0"}
+            }],
+        }))
+        .expect("serializes the reviewed plan"),
+    )
+    .expect("writes the reviewed plan");
+    (plan_path, digest)
+}
+
+#[test]
+fn proxy_serves_cold_snapshot_after_the_reviewed_upstream_is_gone() {
+    let bin = env!("CARGO_BIN_EXE_isolock");
+    let fixture_dir = temporary_directory();
+    let cas_dir = fixture_dir.path().join("cas");
+    let upstream = fixture_dir.path().join("upstream");
+    fs::create_dir_all(&cas_dir).expect("creates an isolated CAS directory");
+    fs::create_dir_all(&upstream).expect("creates the reviewed upstream directory");
+
+    // The upstream holds the bytes a reviewer signed. Acquisition copies them into CAS,
+    // which is the step that makes the later offline replay possible.
+    let package = b"reviewed wheel bytes from the local upstream".as_slice();
+    let filename = "fixture-2.0.0-py3-none-any.whl";
+    fs::write(upstream.join(filename), package).expect("writes the reviewed upstream artifact");
+    let (plan_path, digest) = write_single_pypi_plan(fixture_dir.path(), package, filename);
+
+    let blob = cas_dir.join(digest.sharded_path());
+    fs::create_dir_all(blob.parent().expect("CAS digest has a parent shard"))
+        .expect("creates CAS shard directory");
+    fs::copy(upstream.join(filename), &blob).expect("acquires the reviewed artifact into CAS");
+
+    let plan = Command::new(bin)
+        .args(["plan", "--ci"])
+        .current_dir(fixture_dir.path())
+        .env("ISOLOCK_PLAN", &plan_path)
+        .env("ISOLOCK_CAS_DIR", &cas_dir)
+        .output()
+        .expect("checks the real CLI plan");
+    assert!(
+        plan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+
+    let (_serve, address) = start_serve(&plan_path, &cas_dir);
+
+    // Connected path: index and artifact both resolve while the upstream exists.
+    let index = http_get(&address, "/pypi/simple/fixture/");
+    assert!(
+        index.starts_with(b"HTTP/1.1 200 OK\r\n"),
+        "connects: {index:?}"
+    );
+    assert!(String::from_utf8_lossy(&index).contains(filename));
+    let connected = http_get(&address, &format!("/pypi/packages/{filename}"));
+    assert!(
+        connected.starts_with(b"HTTP/1.1 200 OK\r\n"),
+        "connects: {connected:?}"
+    );
+    assert!(
+        connected.ends_with(package),
+        "a connected fetch returns the reviewed bytes"
+    );
+
+    // Shut the reviewed upstream down completely. Nothing remains to fall back to.
+    fs::remove_dir_all(&upstream).expect("deletes the reviewed upstream");
+
+    // Cold replay: the same process still answers, so the consumer never noticed.
+    let replay = http_get(&address, &format!("/pypi/packages/{filename}"));
+    assert!(
+        replay.starts_with(b"HTTP/1.1 200 OK\r\n"),
+        "offline replay serves from CAS: {replay:?}"
+    );
+    assert!(
+        replay.ends_with(package),
+        "replay returns the same reviewed bytes after upstream shutdown"
+    );
+
+    // No fallback: anything outside the reviewed snapshot still fails closed. This is the
+    // half of the claim a successful replay alone cannot make.
+    let miss = http_get(&address, "/pypi/simple/fixture-unreviewed/");
+    assert!(
+        !miss.starts_with(b"HTTP/1.1 200 OK\r\n"),
+        "an unreviewed package must not resolve, even as a fallback: {miss:?}"
+    );
+}
+
+#[test]
+fn corrupt_cas_blob_fails_closed_before_any_bytes_are_served() {
+    // Kept separate from the replay journey above because the CAS is read into memory when
+    // the listener binds. Corruption is therefore refused at startup rather than mid-serve,
+    // which is the stronger guarantee and is what this asserts.
+    let fixture_dir = temporary_directory();
+    let cas_dir = fixture_dir.path().join("cas");
+    fs::create_dir_all(&cas_dir).expect("creates an isolated CAS directory");
+
+    let package = b"reviewed wheel bytes".as_slice();
+    let filename = "fixture-2.0.0-py3-none-any.whl";
+    let (plan_path, digest) = write_single_pypi_plan(fixture_dir.path(), package, filename);
+
+    let blob = cas_dir.join(digest.sharded_path());
+    fs::create_dir_all(blob.parent().expect("CAS digest has a parent shard"))
+        .expect("creates CAS shard directory");
+    fs::write(&blob, b"tampered before the listener binds").expect("writes a corrupt blob");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_isolock"))
+        .args(["serve", "--port", "0"])
+        .env("ISOLOCK_PLAN", &plan_path)
+        .env("ISOLOCK_CAS_DIR", &cas_dir)
+        .output()
+        .expect("runs isolock serve against a corrupt CAS");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a corrupt CAS must fail closed before listening"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no listener URL is announced: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("SHA-256 mismatch"),
+        "the diagnostic names the integrity failure: {stderr}"
+    );
+    assert!(
+        stderr.contains(digest.as_str()),
+        "the diagnostic names the expected digest so a reviewer can trace it: {stderr}"
+    );
+}
