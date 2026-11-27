@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2024 The Chaste Authors
+# SPDX-License-Identifier: CC0-1.0
+
+[package]
+name = "chaste-npm"
+description = "Parser for npm lockfiles"
+edition = "2021"
+keywords = ["lockfile", "npm"]
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[features]
+fuzzing = ["dep:arbitrary"]
+
+[dependencies]
+chaste-types.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dependencies.arbitrary]
+optional = true
+workspace = true
+features = ["derive"]
+
+[dependencies.serde]
+workspace = true
+features = ["derive"]

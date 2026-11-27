@@ -1,0 +1,5 @@
+error: `clifacet::commands!` needs at least one command: name the modules that hold them, `clifacet::commands!(list, show, new)` — one file per command, or use `#[clifacet::app]` and `#[clifacet::commands]` for declarative controllers (decision-25)
+ --> tests/ui/commands_missing_list.rs:4:27
+  |
+4 |     clifacet::__commands!(name = "app");
+  |                           ^^^^

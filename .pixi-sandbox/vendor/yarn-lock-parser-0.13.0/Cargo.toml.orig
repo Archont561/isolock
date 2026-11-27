@@ -1,0 +1,24 @@
+[package]
+name = "yarn-lock-parser"
+description = "yarn.lock parser"
+version = "0.13.0"
+authors = [
+  "Roberto Huertas <roberto.huertas@outlook.com>",
+  "Riccardo Attilio Galli <riccardo@sideralis.org>",
+]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/robertohuertasm/yarn-lock-parser"
+readme = "README.md"
+keywords = ["yarn", "parser"]
+categories = ["parsing"]
+
+exclude = [".github/*", "tests/*"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+nom = "8.0.0"
+nom-language = "0.1.0"
+thiserror = "2.0.17"

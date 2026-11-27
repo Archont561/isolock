@@ -1,0 +1,2636 @@
+use std::cmp::{Ord, Ordering, PartialOrd};
+use std::convert::TryFrom;
+use std::fmt;
+
+use winnow::ascii::{space0, space1};
+use winnow::combinator::{
+    alt, delimited, eof, opt, peek, preceded, repeat_till, separated, terminated,
+};
+use winnow::error::ErrMode;
+use winnow::token::{any, literal};
+use winnow::{ModalResult, Parser};
+
+#[cfg(feature = "serde")]
+use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::{
+    extras, number, Identifier, SemverError, SemverErrorKind, SemverParseError, Version,
+    MAX_SAFE_INTEGER,
+};
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct BoundSet {
+    upper: Box<Bound>,
+    lower: Box<Bound>,
+}
+
+impl BoundSet {
+    fn new(lower: Bound, upper: Bound) -> Option<Self> {
+        use Bound::*;
+        use Predicate::*;
+
+        match (lower, upper) {
+            (Lower(Excluding(v1)), Upper(Including(v2)))
+            | (Lower(Including(v1)), Upper(Excluding(v2)))
+                if v1 == v2 =>
+            {
+                None
+            }
+            (Lower(Including(v1)), Upper(Including(v2))) if v1 == v2 => Some(Self {
+                lower: Box::new(Lower(Including(v1))),
+                upper: Box::new(Upper(Including(v2))),
+            }),
+            (lower, upper) if lower < upper => Some(Self {
+                lower: Box::new(lower),
+                upper: Box::new(upper),
+            }),
+            _ => None,
+        }
+    }
+
+    fn at_least(p: Predicate) -> Option<Self> {
+        BoundSet::new(Bound::Lower(p), Bound::upper())
+    }
+
+    fn at_most(p: Predicate) -> Option<Self> {
+        BoundSet::new(Bound::lower(), Bound::Upper(p))
+    }
+
+    fn exact(version: Version) -> Option<Self> {
+        BoundSet::new(
+            Bound::Lower(Predicate::Including(version.clone())),
+            Bound::Upper(Predicate::Including(version)),
+        )
+    }
+
+    fn satisfies(&self, version: &Version, include_prerelease: bool) -> bool {
+        use Bound::*;
+        use Predicate::*;
+
+        let lower_bound = match &self.lower.as_ref() {
+            Lower(Including(lower)) => lower <= version,
+            Lower(Excluding(lower)) => lower < version,
+            Lower(Unbounded) => true,
+            _ => unreachable!(
+                "There should not have been an upper bound: {:#?}",
+                self.lower
+            ),
+        };
+
+        let upper_bound = match &self.upper.as_ref() {
+            Upper(Including(upper)) => version <= upper,
+            Upper(Excluding(upper)) => version < upper,
+            Upper(Unbounded) => true,
+            _ => unreachable!(
+                "There should not have been an lower bound: {:#?}",
+                self.lower
+            ),
+        };
+
+        if !lower_bound || !upper_bound {
+            return false;
+        }
+
+        if version.is_prerelease() && !include_prerelease {
+            let lower_version = match &self.lower.as_ref() {
+                Lower(Including(v)) => Some(v),
+                Lower(Excluding(v)) => Some(v),
+                _ => None,
+            };
+            if let Some(lower_version) = lower_version {
+                if lower_version.is_prerelease()
+                    && version.major == lower_version.major
+                    && version.minor == lower_version.minor
+                    && version.patch == lower_version.patch
+                {
+                    return true;
+                }
+            }
+
+            let upper_version = match &self.upper.as_ref() {
+                Upper(Including(v)) => Some(v),
+                Upper(Excluding(v)) => Some(v),
+                _ => None,
+            };
+            if let Some(upper_version) = upper_version {
+                if upper_version.is_prerelease()
+                    && version.major == upper_version.major
+                    && version.minor == upper_version.minor
+                    && version.patch == upper_version.patch
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        true
+    }
+
+    fn allows_all(&self, other: &BoundSet) -> bool {
+        self.lower <= other.lower && other.upper <= self.upper
+    }
+
+    fn allows_any(&self, other: &BoundSet) -> bool {
+        if other.upper < self.lower {
+            return false;
+        }
+
+        if self.upper < other.lower {
+            return false;
+        }
+
+        true
+    }
+
+    fn intersect(&self, other: &Self) -> Option<Self> {
+        let lower: &Bound = std::cmp::max(&self.lower, &other.lower);
+        let upper: &Bound = std::cmp::min(&self.upper, &other.upper);
+
+        BoundSet::new(lower.clone(), upper.clone())
+    }
+
+    fn difference(&self, other: &Self) -> Option<Vec<Self>> {
+        use Bound::*;
+
+        if let Some(overlap) = self.intersect(other) {
+            if &overlap == self {
+                return None;
+            }
+
+            if self.lower < overlap.lower && overlap.upper < self.upper {
+                return Some(vec![
+                    BoundSet::new(*self.lower.clone(), Upper(overlap.lower.predicate().flip()))
+                        .unwrap(),
+                    BoundSet::new(Lower(overlap.upper.predicate().flip()), *self.upper.clone())
+                        .unwrap(),
+                ]);
+            }
+
+            if self.lower < overlap.lower {
+                return BoundSet::new(*self.lower.clone(), Upper(overlap.lower.predicate().flip()))
+                    .map(|f| vec![f]);
+            }
+
+            BoundSet::new(Lower(overlap.upper.predicate().flip()), *self.upper.clone())
+                .map(|f| vec![f])
+        } else {
+            Some(vec![self.clone()])
+        }
+    }
+
+    fn comparators(&self) -> impl Iterator<Item = Comparator> + '_ {
+        ComparatorIter::new(self)
+    }
+}
+
+impl fmt::Display for BoundSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Bound::*;
+        use Predicate::*;
+        match (&self.lower.as_ref(), &self.upper.as_ref()) {
+            (Lower(Unbounded), Upper(Unbounded)) => write!(f, "*"),
+            (Lower(Unbounded), Upper(Including(v))) => write!(f, "<={}", v),
+            (Lower(Unbounded), Upper(Excluding(v))) => write!(f, "<{}", v),
+            (Lower(Including(v)), Upper(Unbounded)) => write!(f, ">={}", v),
+            (Lower(Excluding(v)), Upper(Unbounded)) => write!(f, ">{}", v),
+            (Lower(Including(v)), Upper(Including(v2))) if v == v2 => write!(f, "{}", v),
+            (Lower(Including(v)), Upper(Including(v2))) => write!(f, ">={} <={}", v, v2),
+            (Lower(Including(v)), Upper(Excluding(v2))) => write!(f, ">={} <{}", v, v2),
+            (Lower(Excluding(v)), Upper(Including(v2))) => write!(f, ">{} <={}", v, v2),
+            (Lower(Excluding(v)), Upper(Excluding(v2))) => write!(f, ">{} <{}", v, v2),
+            _ => unreachable!("does not make sense"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+enum Operation {
+    Exact,
+    GreaterThan,
+    GreaterThanEquals,
+    LessThan,
+    LessThanEquals,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum Predicate {
+    Excluding(Version), // < and >
+    Including(Version), // <= and >=
+    Unbounded,          // *
+}
+
+impl Predicate {
+    fn flip(self) -> Self {
+        use Predicate::*;
+        match self {
+            Excluding(v) => Including(v),
+            Including(v) => Excluding(v),
+            Unbounded => Unbounded,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum Bound {
+    Lower(Predicate),
+    Upper(Predicate),
+}
+
+impl Bound {
+    fn upper() -> Self {
+        Bound::Upper(Predicate::Unbounded)
+    }
+
+    fn lower() -> Self {
+        Bound::Lower(Predicate::Unbounded)
+    }
+
+    fn predicate(self) -> Predicate {
+        use Bound::*;
+
+        match self {
+            Lower(p) => p,
+            Upper(p) => p,
+        }
+    }
+
+    fn rank(&self) -> (&Version, i8) {
+        use Bound::*;
+        use Predicate::*;
+
+        match self {
+            Upper(Excluding(v)) => (v, 0),
+            Lower(Including(v)) => (v, 1),
+            Upper(Including(v)) => (v, 2),
+            Lower(Excluding(v)) => (v, 3),
+            Lower(Unbounded) | Upper(Unbounded) => {
+                unreachable!("cannot rank unbounded bounds")
+            }
+        }
+    }
+}
+
+impl Ord for Bound {
+    fn cmp(&self, other: &Self) -> Ordering {
+        use Bound::*;
+        use Predicate::*;
+
+        match (self, other) {
+            (Lower(Unbounded), Lower(Unbounded)) | (Upper(Unbounded), Upper(Unbounded)) => {
+                Ordering::Equal
+            }
+            (Lower(Unbounded), _) => Ordering::Less,
+            (_, Lower(Unbounded)) => Ordering::Greater,
+            (Upper(Unbounded), _) => Ordering::Greater,
+            (_, Upper(Unbounded)) => Ordering::Less,
+            _ => {
+                let (self_version, self_rank) = self.rank();
+                let (other_version, other_rank) = other.rank();
+
+                match self_version.cmp(other_version) {
+                    Ordering::Equal => self_rank.cmp(&other_rank),
+                    ord => ord,
+                }
+            }
+        }
+    }
+}
+
+impl PartialOrd for Bound {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Comparator {
+    op: Operation,
+    version: Version,
+}
+
+struct ComparatorIter {
+    state: ComparatorIterState,
+}
+
+enum ComparatorIterState {
+    Exact(Option<Comparator>),
+    Pair {
+        items: [Option<Comparator>; 2],
+        index: usize,
+    },
+    Fallback(Option<Comparator>),
+    Done,
+}
+
+impl ComparatorIter {
+    fn new(bound_set: &BoundSet) -> Self {
+        match (&*bound_set.lower, &*bound_set.upper) {
+            (Bound::Lower(Predicate::Including(low)), Bound::Upper(Predicate::Including(high)))
+                if low == high =>
+            {
+                return Self {
+                    state: ComparatorIterState::Exact(Some(Comparator {
+                        op: Operation::Exact,
+                        version: low.clone(),
+                    })),
+                };
+            }
+            _ => {}
+        }
+
+        let upper = Comparator::from_bound(&bound_set.upper);
+        let lower = Comparator::from_bound(&bound_set.lower);
+
+        if upper.is_none() && lower.is_none() {
+            return Self {
+                state: ComparatorIterState::Fallback(Some(Comparator {
+                    op: Operation::GreaterThanEquals,
+                    version: Version::from((0, 0, 0)),
+                })),
+            };
+        }
+
+        Self {
+            state: ComparatorIterState::Pair {
+                items: [upper, lower],
+                index: 0,
+            },
+        }
+    }
+}
+
+impl Iterator for ComparatorIter {
+    type Item = Comparator;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        use ComparatorIterState::*;
+
+        match &mut self.state {
+            Exact(opt) => {
+                let next = opt.take();
+                if next.is_none() {
+                    self.state = Done;
+                }
+                next
+            }
+            Pair { items, index } => {
+                while *index < items.len() {
+                    let candidate = items[*index].take();
+                    *index += 1;
+                    if candidate.is_some() {
+                        return candidate;
+                    }
+                }
+                self.state = Done;
+                None
+            }
+            Fallback(opt) => {
+                let next = opt.take();
+                if next.is_none() {
+                    self.state = Done;
+                }
+                next
+            }
+            Done => None,
+        }
+    }
+}
+
+impl Comparator {
+    fn from_bound(bound: &Bound) -> Option<Self> {
+        match bound {
+            Bound::Lower(Predicate::Including(v)) => Some(Self {
+                op: Operation::GreaterThanEquals,
+                version: v.clone(),
+            }),
+            Bound::Lower(Predicate::Excluding(v)) => Some(Self {
+                op: Operation::GreaterThan,
+                version: v.clone(),
+            }),
+            Bound::Upper(Predicate::Including(v)) => Some(Self {
+                op: Operation::LessThanEquals,
+                version: v.clone(),
+            }),
+            Bound::Upper(Predicate::Excluding(v)) => Some(Self {
+                op: Operation::LessThan,
+                version: v.clone(),
+            }),
+            Bound::Lower(Predicate::Unbounded) | Bound::Upper(Predicate::Unbounded) => None,
+        }
+    }
+}
+
+/// Direction in which to check whether a [Version] lies outside a [Range].
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum OutsideDirection {
+    /// Check whether the version is greater than the range.
+    Higher,
+    /// Check whether the version is lower than the range.
+    Lower,
+}
+
+impl TryFrom<char> for OutsideDirection {
+    type Error = RangeError;
+
+    fn try_from(value: char) -> Result<Self, Self::Error> {
+        match value {
+            '>' => Ok(Self::Higher),
+            '<' => Ok(Self::Lower),
+            other => Err(RangeError::InvalidOutsideDirection(other)),
+        }
+    }
+}
+
+/// Errors that can occur when evaluating range relationships outside of parsing.
+#[derive(Debug, Clone, Copy, Error, Eq, PartialEq)]
+pub enum RangeError {
+    #[error(
+        "outside() only supports checking whether a version is above or below a range, found `{0}`"
+    )]
+    InvalidOutsideDirection(char),
+    #[error("outside() could not determine comparator bounds for this range")]
+    MissingComparatorBounds,
+}
+
+/**
+Node-style semver range.
+
+These ranges map mostly 1:1 to semver's except for some internal representation
+details that allow some more interesting set-level operations.
+
+For details on supported syntax, see <https://github.com/npm/node-semver#advanced-range-syntax>
+*/
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Range(Vec<BoundSet>);
+
+impl fmt::Display for OutsideDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OutsideDirection::Higher => write!(f, ">"),
+            OutsideDirection::Lower => write!(f, "<"),
+        }
+    }
+}
+
+impl fmt::Display for Operation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Operation::*;
+        match self {
+            Exact => write!(f, ""),
+            GreaterThan => write!(f, ">"),
+            GreaterThanEquals => write!(f, ">="),
+            LessThan => write!(f, "<"),
+            LessThanEquals => write!(f, "<="),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for Range {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Range {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl Range {
+    /**
+    Parse a range from a string.
+    */
+    pub fn parse<S: AsRef<str>>(input: S) -> Result<Self, SemverError> {
+        let mut input = input.as_ref();
+
+        if input.trim().is_empty() {
+            return Ok(Self::any());
+        }
+
+        if input.split("||").all(|part| part.trim().is_empty()) {
+            return Ok(Self::any());
+        }
+
+        match range_set.parse_next(&mut input) {
+            Ok(range) => Ok(range),
+            Err(err) => Err(match err {
+                ErrMode::Backtrack(e) | ErrMode::Cut(e) => SemverError {
+                    input: input.into(),
+                    span: (e.input.as_ptr() as usize - input.as_ptr() as usize, 0).into(),
+                    kind: if let Some(kind) = e.kind {
+                        kind
+                    } else if let Some(ctx) = e.context {
+                        SemverErrorKind::Context(ctx)
+                    } else {
+                        SemverErrorKind::Other
+                    },
+                },
+                ErrMode::Incomplete(_) => SemverError {
+                    input: input.into(),
+                    span: (input.len() - 1, 0).into(),
+                    kind: SemverErrorKind::IncompleteInput,
+                },
+            }),
+        }
+    }
+
+    /**
+    Creates a new range that matches any version.
+    */
+    pub fn any() -> Self {
+        Self(vec![BoundSet::new(Bound::lower(), Bound::upper()).unwrap()])
+    }
+
+    /**
+    Returns true if `version` is satisfied by this range.
+    */
+    pub fn satisfies(&self, version: &Version) -> bool {
+        self.satisfies_with_prerelease(version, false)
+    }
+
+    /**
+    Returns true if `version` is satisfied by this range.
+
+    This behaves like [Range::satisfies], but will also consider pre-release
+    versions even if the range itself does not specify a matching pre-release.
+    */
+    pub fn satisfies_with_prerelease(&self, version: &Version, include_prerelease: bool) -> bool {
+        self.0
+            .iter()
+            .any(|range| range.satisfies(version, include_prerelease))
+    }
+
+    /**
+    Returns true if `other` is a strict superset of this range.
+    */
+    pub fn allows_all(&self, other: &Range) -> bool {
+        for this in &self.0 {
+            for that in &other.0 {
+                if this.allows_all(that) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /**
+    Returns true if `other` has overlap with this range.
+    */
+    pub fn allows_any(&self, other: &Range) -> bool {
+        for this in &self.0 {
+            for that in &other.0 {
+                if this.allows_any(that) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /**
+    Returns a new range that is the set-intersection between this range and `other`.
+    */
+    pub fn intersect(&self, other: &Self) -> Option<Self> {
+        let mut sets = Vec::new();
+
+        for lefty in &self.0 {
+            for righty in &other.0 {
+                if let Some(set) = lefty.intersect(righty) {
+                    sets.push(set)
+                }
+            }
+        }
+
+        if sets.is_empty() {
+            None
+        } else {
+            Some(Self(sets))
+        }
+    }
+
+    /**
+    Returns a new range that is the set-difference between this range and `other`.
+    */
+    pub fn difference(&self, other: &Self) -> Option<Self> {
+        let mut predicates = Vec::new();
+
+        for lefty in &self.0 {
+            for righty in &other.0 {
+                if let Some(mut range) = lefty.difference(righty) {
+                    predicates.append(&mut range)
+                }
+            }
+        }
+
+        if predicates.is_empty() {
+            None
+        } else {
+            Some(Self(predicates))
+        }
+    }
+
+    /// Return the highest [Version] in the list that satisfies the range,
+    /// or `None` if none of them do.
+    ///
+    /// ```rust
+    #[doc = include_str!("../examples/max_satisfying.rs")]
+    ///
+    pub fn max_satisfying<'v>(&self, versions: &'v [Version]) -> Option<&'v Version> {
+        versions.iter().filter(|v| self.satisfies(v)).max()
+    }
+
+    /// Return the lowest [Version] in the list that satisfies the range,
+    /// or `None` if none of them do.
+    ///
+    /// ```rust
+    #[doc = include_str!("../examples/min_satisfying.rs")]
+    ///
+    pub fn min_satisfying<'v>(&self, versions: &'v [Version]) -> Option<&'v Version> {
+        versions.iter().filter(|v| self.satisfies(v)).min()
+    }
+
+    /**
+    Return the lowest [Version] that can possibly match the given range.
+    */
+    pub fn min_version(&self) -> Option<Version> {
+        if let Some(min_bound) = self.0.iter().map(|range| &range.lower).min() {
+            let min_bound = min_bound.as_ref();
+            match min_bound {
+                Bound::Lower(pred) => match pred {
+                    Predicate::Including(v) => Some(v.clone()),
+                    Predicate::Excluding(v) => {
+                        let mut v = v.clone();
+                        if v.is_prerelease() {
+                            v.pre_release.push(Identifier::Numeric(0))
+                        } else {
+                            v.patch += 1;
+                        }
+                        Some(v)
+                    }
+                    Predicate::Unbounded => {
+                        let mut zero = Version::from((0, 0, 0));
+                        if self.satisfies(&zero) {
+                            return Some(zero);
+                        }
+
+                        zero.pre_release.push(Identifier::Numeric(0));
+                        if self.satisfies(&zero) {
+                            return Some(zero);
+                        }
+                        None
+                    }
+                },
+                Bound::Upper(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn outside_higher(
+        &self,
+        version: &Version,
+        include_prerelease: bool,
+    ) -> Result<bool, RangeError> {
+        if self.satisfies_with_prerelease(version, include_prerelease) {
+            return Ok(false);
+        }
+
+        for range in &self.0 {
+            let mut high: Option<Comparator> = None;
+            let mut low: Option<Comparator> = None;
+
+            for comparator in range.comparators() {
+                if high
+                    .as_ref()
+                    .map_or(true, |h| comparator.version > h.version)
+                {
+                    high = Some(comparator.clone());
+                }
+
+                if low
+                    .as_ref()
+                    .map_or(true, |l| comparator.version < l.version)
+                {
+                    low = Some(comparator);
+                }
+            }
+
+            let (Some(high), Some(low)) = (high.as_ref(), low.as_ref()) else {
+                return Err(RangeError::MissingComparatorBounds);
+            };
+
+            if matches!(
+                high.op,
+                Operation::GreaterThan | Operation::GreaterThanEquals
+            ) {
+                return Ok(false);
+            }
+
+            let low_is_empty = matches!(low.op, Operation::Exact);
+
+            if ((low_is_empty || matches!(low.op, Operation::GreaterThan))
+                && version <= &low.version)
+                || (matches!(low.op, Operation::GreaterThanEquals) && version < &low.version)
+            {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    #[inline]
+    fn outside_lower(
+        &self,
+        version: &Version,
+        include_prerelease: bool,
+    ) -> Result<bool, RangeError> {
+        if self.satisfies_with_prerelease(version, include_prerelease) {
+            return Ok(false);
+        }
+
+        for range in &self.0 {
+            let mut high: Option<Comparator> = None;
+            let mut low: Option<Comparator> = None;
+
+            for comparator in range.comparators() {
+                if high
+                    .as_ref()
+                    .map_or(true, |h| comparator.version < h.version)
+                {
+                    high = Some(comparator.clone());
+                }
+
+                if low
+                    .as_ref()
+                    .map_or(true, |l| comparator.version > l.version)
+                {
+                    low = Some(comparator);
+                }
+            }
+
+            let (Some(high), Some(low)) = (high.as_ref(), low.as_ref()) else {
+                return Err(RangeError::MissingComparatorBounds);
+            };
+
+            if matches!(high.op, Operation::LessThan | Operation::LessThanEquals) {
+                return Ok(false);
+            }
+
+            let low_is_empty = matches!(low.op, Operation::Exact);
+
+            if ((low_is_empty || matches!(low.op, Operation::LessThan)) && version >= &low.version)
+                || (matches!(low.op, Operation::LessThanEquals) && version > &low.version)
+            {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    /// Return `Ok(true)` if the [Version] sits entirely outside this range in
+    /// the specified direction.
+    ///
+    /// `direction` mirrors the JavaScript implementation's "hi/lo" flag:
+    /// [`OutsideDirection::Higher`] checks whether the version is greater than
+    /// the range, while [`OutsideDirection::Lower`] checks whether it is lower.
+    /// Set `include_prerelease` to `true` to treat prerelease versions as
+    /// satisfiable even when the range does not explicitly mention them.
+    ///
+    /// # Errors
+    /// Returns [`RangeError::MissingComparatorBounds`] if the range does not
+    /// expose enough comparator information to perform the comparison.
+    pub fn outside(
+        &self,
+        version: &Version,
+        direction: OutsideDirection,
+        include_prerelease: bool,
+    ) -> Result<bool, RangeError> {
+        match direction {
+            OutsideDirection::Higher => self.outside_higher(version, include_prerelease),
+            OutsideDirection::Lower => self.outside_lower(version, include_prerelease),
+        }
+    }
+}
+
+impl fmt::Display for Range {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, range) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, "||")?;
+            }
+            write!(f, "{}", range)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::str::FromStr for Range {
+    type Err = SemverError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Range::parse(s)
+    }
+}
+
+// ---- Parser ----
+
+/*
+Grammar from https://github.com/npm/node-semver#range-grammar
+
+range-set  ::= range ( logical-or range ) *
+logical-or ::= ( ' ' ) * '||' ( ' ' ) *
+range      ::= hyphen | simple ( ' ' simple ) * | ''
+hyphen     ::= partial ' - ' partial
+simple     ::= primitive | partial | tilde | caret
+primitive  ::= ( '<' | '>' | '>=' | '<=' | '=' ) partial
+partial    ::= xr ( '.' xr ( '.' xr qualifier ? )? )?
+xr         ::= 'x' | 'X' | '*' | nr
+nr         ::= '0' | ['1'-'9'] ( ['0'-'9'] ) *
+tilde      ::= '~' partial
+caret      ::= '^' partial
+qualifier  ::= ( '-' pre )? ( '+' build )?
+pre        ::= parts
+build      ::= parts
+parts      ::= part ( '.' part ) *
+part       ::= nr | [-0-9A-Za-z]+
+
+
+Loose mode (all LHS are invalid in strict mode):
+* 01.02.03 -> 1.2.3
+* 1.2.3alpha -> 1.2.3-alpha
+* v 1.2.3 -> 1.2.3 (v1.2.3 is actually a valid "plain" version)
+* =1.2.3 -> 1.2.3 (already a valid range)
+* - 10 -> >=10.0.0 <11.0.0
+* 1.2.3 foo 4.5.6 -> 1.2.3 4.5.6
+* 1.2.3.4 -> invalid range
+* foo -> invalid range
+* 1.2beta4 -> invalid range
+
+TODO: add tests for all these
+*/
+
+// range-set ::= range ( logical-or range ) *
+fn range_set<'s>(input: &mut &'s str) -> ModalResult<Range, SemverParseError<&'s str>> {
+    Parser::try_map(bound_sets, |sets| {
+        if sets.is_empty() {
+            Err(SemverParseError {
+                input,
+                kind: Some(SemverErrorKind::NoValidRanges),
+                context: None,
+            })
+        } else {
+            Ok(Range(sets))
+        }
+    })
+    .parse_next(input)
+}
+
+// logical-or ::= ( ' ' ) * '||' ( ' ' ) *
+fn bound_sets<'s>(input: &mut &'s str) -> ModalResult<Vec<BoundSet>, SemverParseError<&'s str>> {
+    Parser::map(
+        separated(0.., range, logical_or),
+        |sets: Vec<Vec<BoundSet>>| sets.into_iter().flatten().collect(),
+    )
+    .parse_next(input)
+}
+fn logical_or<'s>(input: &mut &'s str) -> ModalResult<(), SemverParseError<&'s str>> {
+    Parser::map(delimited(space0, literal("||"), space0), |_| ()).parse_next(input)
+}
+
+fn range<'s>(input: &mut &'s str) -> ModalResult<Vec<BoundSet>, SemverParseError<&'s str>> {
+    // TODO: loose parsing means that `1.2.3 foo` translates to `1.2.3`, so we
+    // need to do some stuff here to filter out unwanted BoundSets.
+    Parser::map(
+        separated(0.., simple, space1),
+        |bs: Vec<Option<BoundSet>>| {
+            bs.into_iter()
+                .flatten()
+                .fold(Vec::new(), |mut acc: Vec<BoundSet>, bs| {
+                    if let Some(last) = acc.pop() {
+                        if let Some(bound) = last.intersect(&bs) {
+                            acc.push(bound);
+                        } else {
+                            acc.push(last);
+                            acc.push(bs);
+                        }
+                    } else {
+                        acc.push(bs)
+                    }
+                    acc
+                })
+        },
+    )
+    .parse_next(input)
+}
+
+// simple ::= primitive | partial | tilde | caret | garbage
+fn simple<'s>(input: &mut &'s str) -> ModalResult<Option<BoundSet>, SemverParseError<&'s str>> {
+    alt((
+        terminated(hyphen, peek(alt((space1, literal("||"), eof)))),
+        terminated(primitive, peek(alt((space1, literal("||"), eof)))),
+        terminated(partial, peek(alt((space1, literal("||"), eof)))),
+        terminated(tilde, peek(alt((space1, literal("||"), eof)))),
+        terminated(caret, peek(alt((space1, literal("||"), eof)))),
+        garbage,
+    ))
+    .parse_next(input)
+}
+
+fn garbage<'s>(input: &mut &'s str) -> ModalResult<Option<BoundSet>, SemverParseError<&'s str>> {
+    Parser::map(
+        repeat_till(0.., any, alt((peek(space1), peek(literal("||")), eof))),
+        |_: ((), &str)| None,
+    )
+    .parse_next(input)
+}
+
+// primitive  ::= ( '<' | '>' | '>=' | '<=' | '=' ) partial
+fn primitive<'s>(input: &mut &'s str) -> ModalResult<Option<BoundSet>, SemverParseError<&'s str>> {
+    use Operation::*;
+
+    Parser::map(
+        (operation, preceded(space0, partial_version)),
+        |parsed| match parsed {
+            (GreaterThanEquals, partial) => {
+                BoundSet::at_least(Predicate::Including(partial.into()))
+            }
+            (
+                GreaterThan,
+                Partial {
+                    major: Some(major),
+                    minor: Some(minor),
+                    patch: None,
+                    ..
+                },
+            ) => BoundSet::at_least(Predicate::Including((major, minor + 1, 0).into())),
+            (
+                GreaterThan,
+                Partial {
+                    major: Some(major),
+                    minor: None,
+                    patch: None,
+                    ..
+                },
+            ) => BoundSet::at_least(Predicate::Including((major + 1, 0, 0).into())),
+            (GreaterThan, partial) => BoundSet::at_least(Predicate::Excluding(partial.into())),
+            (
+                LessThan,
+                Partial {
+                    major: Some(major),
+                    minor: Some(minor),
+                    patch: None,
+                    ..
+                },
+            ) => BoundSet::at_most(Predicate::Excluding((major, minor, 0, 0).into())),
+            (
+                LessThan,
+                Partial {
+                    major,
+                    minor,
+                    patch,
+                    pre_release,
+                    build,
+                    ..
+                },
+            ) => BoundSet::at_most(Predicate::Excluding(Version {
+                major: major.unwrap_or(0),
+                minor: minor.unwrap_or(0),
+                patch: patch.unwrap_or(0),
+                build,
+                pre_release,
+            })),
+            (
+                LessThanEquals,
+                Partial {
+                    major,
+                    minor: None,
+                    patch: None,
+                    ..
+                },
+            ) => BoundSet::at_most(Predicate::Including(
+                (major.unwrap_or(0), MAX_SAFE_INTEGER, MAX_SAFE_INTEGER).into(),
+            )),
+            (
+                LessThanEquals,
+                Partial {
+                    major,
+                    minor,
+                    patch: None,
+                    ..
+                },
+            ) => BoundSet::at_most(Predicate::Including(
+                (major.unwrap_or(0), minor.unwrap_or(0), MAX_SAFE_INTEGER).into(),
+            )),
+            (LessThanEquals, partial) => BoundSet::at_most(Predicate::Including(partial.into())),
+            (
+                Exact,
+                Partial {
+                    major: Some(major),
+                    minor: Some(minor),
+                    patch: Some(patch),
+                    pre_release,
+                    ..
+                },
+            ) => BoundSet::exact(Version {
+                major,
+                minor,
+                patch,
+                pre_release,
+                build: vec![],
+            }),
+            (
+                Exact,
+                Partial {
+                    major: Some(major),
+                    minor: Some(minor),
+                    ..
+                },
+            ) => BoundSet::new(
+                Bound::Lower(Predicate::Including((major, minor, 0).into())),
+                Bound::Upper(Predicate::Excluding(Version {
+                    major,
+                    minor: minor + 1,
+                    patch: 0,
+                    pre_release: vec![Identifier::Numeric(0)],
+                    build: vec![],
+                })),
+            ),
+            (
+                Exact,
+                Partial {
+                    major: Some(major), ..
+                },
+            ) => BoundSet::new(
+                Bound::Lower(Predicate::Including((major, 0, 0).into())),
+                Bound::Upper(Predicate::Excluding(Version {
+                    major: major + 1,
+                    minor: 0,
+                    patch: 0,
+                    pre_release: vec![Identifier::Numeric(0)],
+                    build: vec![],
+                })),
+            ),
+            _ => None,
+        },
+    )
+    .context("operation range (ex: >= 1.2.3)")
+    .parse_next(input)
+}
+
+fn operation<'s>(input: &mut &'s str) -> ModalResult<Operation, SemverParseError<&'s str>> {
+    use Operation::*;
+    alt((
+        Parser::map(literal(">="), |_| GreaterThanEquals),
+        Parser::map(literal(">"), |_| GreaterThan),
+        Parser::map(literal("="), |_| Exact),
+        Parser::map(literal("<="), |_| LessThanEquals),
+        Parser::map(literal("<"), |_| LessThan),
+    ))
+    .parse_next(input)
+}
+
+fn partial<'s>(input: &mut &'s str) -> ModalResult<Option<BoundSet>, SemverParseError<&'s str>> {
+    Parser::map(partial_version, |partial| match partial {
+        Partial { major: None, .. } => BoundSet::at_least(Predicate::Including((0, 0, 0).into())),
+        Partial {
+            major: Some(major),
+            minor: None,
+            ..
+        } => BoundSet::new(
+            Bound::Lower(Predicate::Including((major, 0, 0).into())),
+            Bound::Upper(Predicate::Excluding(Version {
+                major: major + 1,
+                minor: 0,
+                patch: 0,
+                pre_release: vec![Identifier::Numeric(0)],
+                build: vec![],
+            })),
+        ),
+        Partial {
+            major: Some(major),
+            minor: Some(minor),
+            patch: None,
+            ..
+        } => BoundSet::new(
+            Bound::Lower(Predicate::Including((major, minor, 0).into())),
+            Bound::Upper(Predicate::Excluding(Version {
+                major,
+                minor: minor + 1,
+                patch: 0,
+                pre_release: vec![Identifier::Numeric(0)],
+                build: vec![],
+            })),
+        ),
+        partial => BoundSet::exact(partial.into()),
+    })
+    .context("plain version range (ex: 1.2)")
+    .parse_next(input)
+}
+
+#[derive(Debug, Clone)]
+struct Partial {
+    major: Option<u64>,
+    minor: Option<u64>,
+    patch: Option<u64>,
+    pre_release: Vec<Identifier>,
+    build: Vec<Identifier>,
+}
+
+impl From<Partial> for Version {
+    fn from(partial: Partial) -> Self {
+        Version {
+            major: partial.major.unwrap_or(0),
+            minor: partial.minor.unwrap_or(0),
+            patch: partial.patch.unwrap_or(0),
+            pre_release: partial.pre_release,
+            build: partial.build,
+        }
+    }
+}
+
+// partial ::= xr ( '.' xr ( '.' xr qualifier ? )? )?
+// xr      ::= 'x' | 'X' | '*' | nr
+// nr      ::= '0' | ['1'-'9'] ( ['0'-'9'] ) *
+// NOTE: Loose mode means nr is actually just `['0'-'9']`.
+fn partial_version<'s>(input: &mut &'s str) -> ModalResult<Partial, SemverParseError<&'s str>> {
+    let _ = opt(literal("v")).parse_next(input)?;
+    let _ = space0(input)?;
+    let major = component(input)?;
+    let minor = opt(preceded(literal("."), component)).parse_next(input)?;
+    let patch = opt(preceded(literal("."), component)).parse_next(input)?;
+    let (pre, build) = if patch.is_some() {
+        extras(input)?
+    } else {
+        (vec![], vec![])
+    };
+    Ok(Partial {
+        major,
+        minor: minor.flatten(),
+        patch: patch.flatten(),
+        pre_release: pre,
+        build,
+    })
+}
+
+fn component<'s>(input: &mut &'s str) -> ModalResult<Option<u64>, SemverParseError<&'s str>> {
+    alt((
+        Parser::map(x_or_asterisk, |_| None),
+        Parser::map(number, Some),
+    ))
+    .parse_next(input)
+}
+
+fn x_or_asterisk<'s>(input: &mut &'s str) -> ModalResult<(), SemverParseError<&'s str>> {
+    Parser::map(alt((literal("x"), literal("X"), literal("*"))), |_| ()).parse_next(input)
+}
+
+fn tilde_gt<'s>(input: &mut &'s str) -> ModalResult<Option<&'s str>, SemverParseError<&'s str>> {
+    Parser::map(
+        (literal("~"), space0, opt(literal(">")), space0),
+        |(_, _, gt, _)| gt,
+    )
+    .parse_next(input)
+}
+
+fn tilde<'s>(input: &mut &'s str) -> ModalResult<Option<BoundSet>, SemverParseError<&'s str>> {
+    Parser::map((tilde_gt, partial_version), |parsed| match parsed {
+        (
+            Some(_gt),
+            Partial {
+                major: Some(major),
+                minor: None,
+                patch: None,
+                ..
+            },
+        ) => BoundSet::new(
+            Bound::Lower(Predicate::Including((major, 0, 0).into())),
+            Bound::Upper(Predicate::Excluding((major + 1, 0, 0, 0).into())),
+        ),
+        (
+            Some(_gt),
+            Partial {
+                major: Some(major),
+                minor: Some(minor),
+                patch,
+                pre_release,
+                ..
+            },
+        ) => BoundSet::new(
+            Bound::Lower(Predicate::Including(Version {
+                major,
+                minor,
+                patch: patch.unwrap_or(0),
+                pre_release,
+                build: vec![],
+            })),
+            Bound::Upper(Predicate::Excluding((major, minor + 1, 0, 0).into())),
+        ),
+        (
+            None,
+            Partial {
+                major: Some(major),
+                minor: Some(minor),
+                patch: Some(patch),
+                pre_release,
+                ..
+            },
+        ) => BoundSet::new(
+            Bound::Lower(Predicate::Including(Version {
+                major,
+                minor,
+                patch,
+                pre_release,
+                build: vec![],
+            })),
+            Bound::Upper(Predicate::Excluding((major, minor + 1, 0, 0).into())),
+        ),
+        (
+            None,
+            Partial {
+                major: Some(major),
+                minor: Some(minor),
+                patch: None,
+                ..
+            },
+        ) => BoundSet::new(
+            Bound::Lower(Predicate::Including((major, minor, 0).into())),
+            Bound::Upper(Predicate::Excluding((major, minor + 1, 0, 0).into())),
+        ),
+        (
+            None,
+            Partial {
+                major: Some(major),
+                minor: None,
+                patch: None,
+                ..
+            },
+        ) => BoundSet::new(
+            Bound::Lower(Predicate::Including((major, 0, 0).into())),
+            Bound::Upper(Predicate::Excluding((major + 1, 0, 0, 0).into())),
+        ),
+        _ => None,
+    })
+    .context("tilde version range (ex: ~1.2.3)")
+    .parse_next(input)
+}
+
+fn caret<'s>(input: &mut &'s str) -> ModalResult<Option<BoundSet>, SemverParseError<&'s str>> {
+    Parser::map(
+        preceded((literal("^"), space0), partial_version),
+        |parsed| match parsed {
+            Partial {
+                major: Some(0),
+                minor: None,
+                patch: None,
+                ..
+            } => BoundSet::at_most(Predicate::Excluding((1, 0, 0, 0).into())),
+            Partial {
+                major: Some(0),
+                minor: Some(minor),
+                patch: None,
+                ..
+            } => BoundSet::new(
+                Bound::Lower(Predicate::Including((0, minor, 0).into())),
+                Bound::Upper(Predicate::Excluding((0, minor + 1, 0, 0).into())),
+            ),
+            // TODO: can be compressed?
+            Partial {
+                major: Some(major),
+                minor: None,
+                patch: None,
+                ..
+            } => BoundSet::new(
+                Bound::Lower(Predicate::Including((major, 0, 0).into())),
+                Bound::Upper(Predicate::Excluding((major + 1, 0, 0, 0).into())),
+            ),
+            Partial {
+                major: Some(major),
+                minor: Some(minor),
+                patch: None,
+                ..
+            } => BoundSet::new(
+                Bound::Lower(Predicate::Including((major, minor, 0).into())),
+                Bound::Upper(Predicate::Excluding((major + 1, 0, 0, 0).into())),
+            ),
+            Partial {
+                major: Some(major),
+                minor: Some(minor),
+                patch: Some(patch),
+                pre_release,
+                ..
+            } => BoundSet::new(
+                Bound::Lower(Predicate::Including(Version {
+                    major,
+                    minor,
+                    patch,
+                    pre_release,
+                    build: vec![],
+                })),
+                Bound::Upper(Predicate::Excluding(match (major, minor, patch) {
+                    (0, 0, n) => Version::from((0, 0, n + 1, 0)),
+                    (0, n, _) => Version::from((0, n + 1, 0, 0)),
+                    (n, _, _) => Version::from((n + 1, 0, 0, 0)),
+                })),
+            ),
+            _ => None,
+        },
+    )
+    .context("caret version range (ex: ^1.2.3)")
+    .parse_next(input)
+}
+
+// hyphen ::= ' - ' partial /* loose */ | partial ' - ' partial
+fn hyphen<'s>(input: &mut &'s str) -> ModalResult<Option<BoundSet>, SemverParseError<&'s str>> {
+    fn parser<'s>(input: &mut &'s str) -> ModalResult<Option<BoundSet>, SemverParseError<&'s str>> {
+        let lower = opt(partial_version).parse_next(input)?;
+        let _ = space1(input)?;
+        let _ = literal("-").parse_next(input)?;
+        let _ = space1(input)?;
+        let upper = partial_version(input)?;
+        let upper = match upper {
+            Partial {
+                major: None,
+                minor: None,
+                patch: None,
+                ..
+            } => Predicate::Excluding(Version {
+                major: 0,
+                minor: 0,
+                patch: 0,
+                pre_release: vec![Identifier::Numeric(0)],
+                build: vec![],
+            }),
+            Partial {
+                major: Some(major),
+                minor: None,
+                patch: None,
+                ..
+            } => Predicate::Excluding(Version {
+                major: major + 1,
+                minor: 0,
+                patch: 0,
+                pre_release: vec![Identifier::Numeric(0)],
+                build: vec![],
+            }),
+            Partial {
+                major: Some(major),
+                minor: Some(minor),
+                patch: None,
+                ..
+            } => Predicate::Excluding(Version {
+                major,
+                minor: minor + 1,
+                patch: 0,
+                pre_release: vec![Identifier::Numeric(0)],
+                build: vec![],
+            }),
+            partial => Predicate::Including(partial.into()),
+        };
+        let bounds = if let Some(lower) = lower {
+            BoundSet::new(
+                Bound::Lower(Predicate::Including(lower.into())),
+                Bound::Upper(upper),
+            )
+        } else {
+            BoundSet::at_most(upper)
+        };
+        Ok(bounds)
+    }
+
+    parser
+        .context("hyphenated version range (ex: 1.2 - 2)")
+        .parse_next(input)
+}
+
+macro_rules! create_tests_for {
+    ($func:ident $($name:ident => $version_range:expr , { $x:ident => $allows:expr, $y:ident => $denies:expr$(,)? }),+ ,$(,)?) => {
+
+        #[cfg(test)]
+        mod $func {
+        use super::*;
+
+            $(
+                #[test]
+                fn $name() {
+                    let version_range = Range::parse($version_range).unwrap();
+
+                    let allows: Vec<Range> = $allows.iter().map(|v| Range::parse(v).unwrap()).collect();
+                    for version in &allows {
+                        assert!(version_range.$func(version), "should have allowed: {}", version);
+                    }
+
+                    let ranges: Vec<Range> = $denies.iter().map(|v| Range::parse(v).unwrap()).collect();
+                    for version in &ranges {
+                        assert!(!version_range.$func(version), "should have denied: {}", version);
+                    }
+                }
+            )+
+        }
+    }
+}
+
+create_tests_for! {
+    // The function we are testing:
+    allows_all
+
+    greater_than_eq_123   => ">=1.2.3", {
+        allows => [">=2.0.0", ">2", "2.0.0", "0.1 || 1.4", "1.2.3", "2 - 7", ">2.0.0"],
+        denies => ["1.0.0", "<1.2", ">=1.2.2", "1 - 3", "0.1 || <1.2.0", ">1.0.0"],
+    },
+
+    greater_than_123      => ">1.2.3", {
+        allows => [">=2.0.0", ">2", "2.0.0", "0.1 || 1.4", ">2.0.0"],
+        denies => ["1.0.0", "<1.2", ">=1.2.3", "1 - 3", "0.1 || <1.2.0", "<=3"],
+    },
+
+    eq_123  => "1.2.3", {
+        allows => ["1.2.3"],
+        denies => ["1.0.0", "<1.2", "1.x", ">=1.2.2", "1 - 3", "0.1 || <1.2.0"],
+    },
+
+    lt_123  => "<1.2.3", {
+        allows => ["<=1.2.0", "<1", "1.0.0", "0.1 || 1.4"],
+        denies => ["1 - 3", ">1", "2.0.0", "2.0 || >9", ">1.0.0"],
+    },
+
+    lt_eq_123 => "<=1.2.3", {
+        allows => ["<=1.2.0", "<1", "1.0.0", "0.1 || 1.4", "1.2.3"],
+        denies => ["1 - 3", ">1.0.0", ">=1.0.0"],
+    },
+
+    eq_123_or_gt_400  => "1.2.3 || >4", {
+        allows => [ "1.2.3", ">4", "5.x", "5.2.x", ">=8.2.1", "2.0 || 5.6.7"],
+        denies => ["<2", "1 - 7", "1.9.4 || 2 - 3"],
+    },
+
+    between_two_and_eight => "2 - 8", {
+        allows => [ "2.2.3", "4 - 5"],
+        denies => ["1 - 4", "5 - 9", ">3", "<=5"],
+    },
+}
+
+create_tests_for! {
+    // The function we are testing:
+    allows_any
+
+    greater_than_eq_123   => ">=1.2.3", {
+        allows => ["<=1.2.4", "3.0.0", "<2", ">=3", ">3.0.0"],
+        denies => ["<=1.2.0", "1.0.0", "<1"],
+    },
+
+    greater_than_123   => ">1.2.3", {
+        allows => ["<=1.2.4", "3.0.0", "<2", ">=3", ">3.0.0"],
+        denies => ["<=1.2.3", "1.0.0", "<1"],
+    },
+
+    eq_123   => "1.2.3", {
+        allows => ["1.2.3", "1 - 2"],
+        denies => ["<1.2.3", "1.0.0", ">4.5.6", ">5"],
+    },
+
+    lt_eq_123  => "<=1.2.3", {
+        allows => ["<=1.2.0", "<1.0.0", "1.0.0", ">1.0.0", ">=1.2.0"],
+        denies => ["4.5.6", ">2.0.0", ">=2.0.0"],
+    },
+
+    lt_123  => "<1.2.3", {
+        allows => ["<=2.2.0", "<2.0.0", "1.0.0", ">1.0.0", ">=1.2.0"],
+        denies => ["2.0.0", ">1.8.0", ">=1.8.0"],
+    },
+
+    between_two_and_eight => "2 - 8", {
+        allows => ["2.2.3", "4 - 10", ">4", ">4.0.0", "<=4.0.0", "<9.1.2"],
+        denies => [">10", "10 - 11", "0 - 1"],
+    },
+
+    eq_123_or_gt_400  => "1.2.3 || >4", {
+        allows => [ "1.2.3", ">3", "5.x", "5.2.x", ">=8.2.1", "2 - 7", "2.0 || 5.6.7"],
+        denies => [ "1.9.4 || 2 - 3"],
+    },
+}
+
+#[cfg(test)]
+mod intersection {
+    use super::*;
+
+    fn v(range: &'static str) -> Range {
+        range.parse().unwrap()
+    }
+
+    #[test]
+    fn gt_eq_123() {
+        let base_range = v(">=1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", Some(">=1.2.3 <=2.0.0")),
+            ("<2.0.0", Some(">=1.2.3 <2.0.0")),
+            (">=2.0.0", Some(">=2.0.0")),
+            (">2.0.0", Some(">2.0.0")),
+            (">1.0.0", Some(">=1.2.3")),
+            (">1.2.3", Some(">1.2.3")),
+            ("<=1.2.3", Some("1.2.3")),
+            ("2.0.0", Some("2.0.0")),
+            ("1.1.1", None),
+            ("<1.0.0", None),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn gt_123() {
+        let base_range = v(">1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", Some(">1.2.3 <=2.0.0")),
+            ("<2.0.0", Some(">1.2.3 <2.0.0")),
+            (">=2.0.0", Some(">=2.0.0")),
+            (">2.0.0", Some(">2.0.0")),
+            ("2.0.0", Some("2.0.0")),
+            (">1.2.3", Some(">1.2.3")),
+            ("<=1.2.3", None),
+            ("1.1.1", None),
+            ("<1.0.0", None),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn eq_123() {
+        let base_range = v("1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", Some("1.2.3")),
+            ("<2.0.0", Some("1.2.3")),
+            (">=2.0.0", None),
+            (">2.0.0", None),
+            ("2.0.0", None),
+            ("1.2.3", Some("1.2.3")),
+            (">1.2.3", None),
+            ("<=1.2.3", Some("1.2.3")),
+            ("1.1.1", None),
+            ("<1.0.0", None),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn lt_123() {
+        let base_range = v("<1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", Some("<1.2.3")),
+            ("<2.0.0", Some("<1.2.3")),
+            (">=2.0.0", None),
+            (">=1.0.0", Some(">=1.0.0 <1.2.3")),
+            (">2.0.0", None),
+            ("2.0.0", None),
+            ("1.2.3", None),
+            (">1.2.3", None),
+            ("<=1.2.3", Some("<1.2.3")),
+            ("1.1.1", Some("1.1.1")),
+            ("<1.0.0", Some("<1.0.0")),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn lt_eq_123() {
+        let base_range = v("<=1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", Some("<=1.2.3")),
+            ("<2.0.0", Some("<=1.2.3")),
+            (">=2.0.0", None),
+            (">=1.0.0", Some(">=1.0.0 <=1.2.3")),
+            (">2.0.0", None),
+            ("2.0.0", None),
+            ("1.2.3", Some("1.2.3")),
+            (">1.2.3", None),
+            ("<=1.2.3", Some("<=1.2.3")),
+            ("1.1.1", Some("1.1.1")),
+            ("<1.0.0", Some("<1.0.0")),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn multiple() {
+        let base_range = v("<1 || 3 - 4");
+
+        let samples = vec![("0.5 - 3.5.0", Some(">=0.5.0 <1.0.0||>=3.0.0 <=3.5.0"))];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    fn assert_ranges_match(base: Range, samples: Vec<(&'static str, Option<&'static str>)>) {
+        for (other, expected) in samples {
+            let other = v(other);
+            let resulting_range = base.intersect(&other).map(|v| v.to_string());
+            assert_eq!(
+                resulting_range.clone(),
+                expected.map(|e| e.to_string()),
+                "{} ∩ {} := {}",
+                base,
+                other,
+                resulting_range.unwrap_or_else(|| "⊗".into())
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod difference {
+    use super::*;
+
+    fn v(range: &'static str) -> Range {
+        range.parse().unwrap()
+    }
+
+    #[test]
+    fn gt_eq_123() {
+        let base_range = v(">=1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", Some(">2.0.0")),
+            ("<2.0.0", Some(">=2.0.0")),
+            (">=2.0.0", Some(">=1.2.3 <2.0.0")),
+            (">2.0.0", Some(">=1.2.3 <=2.0.0")),
+            (">1.0.0", None),
+            (">1.2.3", Some("1.2.3")),
+            ("<=1.2.3", Some(">1.2.3")),
+            ("1.1.1", Some(">=1.2.3")),
+            ("<1.0.0", Some(">=1.2.3")),
+            ("2.0.0", Some(">=1.2.3 <2.0.0||>2.0.0")),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn gt_123() {
+        let base_range = v(">1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", Some(">2.0.0")),
+            ("<2.0.0", Some(">=2.0.0")),
+            (">=2.0.0", Some(">1.2.3 <2.0.0")),
+            (">2.0.0", Some(">1.2.3 <=2.0.0")),
+            (">1.0.0", None),
+            (">1.2.3", None),
+            ("<=1.2.3", Some(">1.2.3")),
+            ("1.1.1", Some(">1.2.3")),
+            ("<1.0.0", Some(">1.2.3")),
+            ("2.0.0", Some(">1.2.3 <2.0.0||>2.0.0")),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn eq_123() {
+        let base_range = v("1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", None),
+            ("<2.0.0", None),
+            (">=2.0.0", Some("1.2.3")),
+            (">2.0.0", Some("1.2.3")),
+            (">1.0.0", None),
+            (">1.2.3", Some("1.2.3")),
+            ("1.2.3", None),
+            ("<=1.2.3", None),
+            ("1.1.1", Some("1.2.3")),
+            ("<1.0.0", Some("1.2.3")),
+            ("2.0.0", Some("1.2.3")),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn lt_123() {
+        let base_range = v("<1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", None),
+            ("<2.0.0", None),
+            (">=2.0.0", Some("<1.2.3")),
+            (">2.0.0", Some("<1.2.3")),
+            (">1.0.0", Some("<=1.0.0")),
+            (">1.2.3", Some("<1.2.3")),
+            ("<=1.2.3", None),
+            ("1.1.1", Some("<1.1.1||>1.1.1 <1.2.3")),
+            ("<1.0.0", Some(">=1.0.0 <1.2.3")),
+            ("2.0.0", Some("<1.2.3")),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn lt_eq_123() {
+        let base_range = v("<=1.2.3");
+
+        let samples = vec![
+            ("<=2.0.0", None),
+            ("<2.0.0", None),
+            (">=2.0.0", Some("<=1.2.3")),
+            (">2.0.0", Some("<=1.2.3")),
+            (">1.0.0", Some("<=1.0.0")),
+            (">1.2.3", Some("<=1.2.3")),
+            ("<=1.2.3", None),
+            ("1.1.1", Some("<1.1.1||>1.1.1 <=1.2.3")),
+            ("<1.0.0", Some(">=1.0.0 <=1.2.3")),
+            ("2.0.0", Some("<=1.2.3")),
+        ];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    #[test]
+    fn multiple() {
+        let base_range = v("<1 || 3 - 4");
+
+        let samples = vec![("0.5 - 3.5.0", Some("<0.5.0||>3.5.0 <5.0.0-0"))];
+
+        assert_ranges_match(base_range, samples);
+    }
+
+    fn assert_ranges_match(base: Range, samples: Vec<(&'static str, Option<&'static str>)>) {
+        for (other, expected) in samples {
+            let other = v(other);
+            let resulting_range = base.difference(&other).map(|v| v.to_string());
+            assert_eq!(
+                resulting_range.clone(),
+                expected.map(|e| e.to_string()),
+                "{} \\ {} := {}",
+                base,
+                other,
+                resulting_range.unwrap_or_else(|| "⊗".into())
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod outside {
+    use super::*;
+    use std::convert::TryFrom;
+
+    const VERSION_GT_RANGE: &[(&str, &str, bool)] = &[
+        ("~1.2.2", "1.3.0", false),
+        ("~0.6.1-1", "0.7.1-1", false),
+        ("1.0.0 - 2.0.0", "2.0.1", false),
+        ("1.0.0", "1.0.1-beta1", false),
+        ("1.0.0", "2.0.0", false),
+        ("<=2.0.0", "2.1.1", false),
+        ("<=2.0.0", "3.2.9", false),
+        ("<2.0.0", "2.0.0", false),
+        ("0.1.20 || 1.2.4", "1.2.5", false),
+        ("2.x.x", "3.0.0", false),
+        ("1.2.x", "1.3.0", false),
+        ("1.2.x || 2.x", "3.0.0", false),
+        ("2.*.*", "5.0.1", false),
+        ("1.2.*", "1.3.3", false),
+        ("1.2.* || 2.*", "4.0.0", false),
+        ("2", "3.0.0", false),
+        ("2.3", "2.4.2", false),
+        ("~2.4", "2.5.0", false),
+        ("~2.4", "2.5.5", false),
+        ("~>3.2.1", "3.3.0", false),
+        ("~1", "2.2.3", false),
+        ("~>1", "2.2.4", false),
+        ("~> 1", "3.2.3", false),
+        ("~1.0", "1.1.2", false),
+        ("~ 1.0", "1.1.0", false),
+        ("<1.2", "1.2.0", false),
+        ("< 1.2", "1.2.1", false),
+        ("1", "2.0.0beta", false),
+        ("~v0.5.4-pre", "0.6.0", false),
+        ("~v0.5.4-pre", "0.6.1-pre", false),
+        ("=0.7.x", "0.8.0", false),
+        ("=0.7.x", "0.8.0-asdf", false),
+        ("<0.7.x", "0.7.0", false),
+        ("1.0.0 - 2.0.0", "2.2.3", false),
+        ("1.0.0", "1.0.1", false),
+        ("<=2.0.0", "3.0.0", false),
+        ("<=2.0.0", "2.9999.9999", false),
+        ("<=2.0.0", "2.2.9", false),
+        ("<2.0.0", "2.9999.9999", false),
+        ("<2.0.0", "2.2.9", false),
+        ("2.x.x", "3.1.3", false),
+        ("1.2.x", "1.3.3", false),
+        ("1.2.x || 2.x", "3.1.3", false),
+        ("2.*.*", "3.1.3", false),
+        ("1.2.* || 2.*", "3.1.3", false),
+        ("2", "3.1.2", false),
+        ("2.3", "2.4.1", false),
+        ("~>3.2.1", "3.3.2", false),
+        ("~>1", "2.2.3", false),
+        ("~1.0", "1.1.0", false),
+        ("<1", "1.0.0", false),
+        ("<1", "1.0.0beta", false),
+        ("< 1", "1.0.0beta", false),
+        ("=0.7.x", "0.8.2", false),
+        ("<0.7.x", "0.7.2", false),
+        ("0.7.x", "0.7.2-beta", false),
+    ];
+
+    const VERSION_NOT_GT_RANGE: &[(&str, &str, bool)] = &[
+        ("~0.6.1-1", "0.6.1-1", false),
+        ("1.0.0 - 2.0.0", "1.2.3", false),
+        ("1.0.0 - 2.0.0", "0.9.9", false),
+        ("1.0.0", "1.0.0", false),
+        (">=*", "0.2.4", false),
+        ("", "1.0.0", false),
+        ("*", "1.2.3", false),
+        ("*", "v1.2.3-foo", false),
+        (">=1.0.0", "1.0.0", false),
+        (">=1.0.0", "1.0.1", false),
+        (">=1.0.0", "1.1.0", false),
+        (">1.0.0", "1.0.1", false),
+        (">1.0.0", "1.1.0", false),
+        ("<=2.0.0", "2.0.0", false),
+        ("<=2.0.0", "1.9999.9999", false),
+        ("<=2.0.0", "0.2.9", false),
+        ("<2.0.0", "1.9999.9999", false),
+        ("<2.0.0", "0.2.9", false),
+        (">= 1.0.0", "1.0.0", false),
+        (">=  1.0.0", "1.0.1", false),
+        (">=   1.0.0", "1.1.0", false),
+        ("> 1.0.0", "1.0.1", false),
+        (">  1.0.0", "1.1.0", false),
+        ("<=   2.0.0", "2.0.0", false),
+        ("<= 2.0.0", "1.9999.9999", false),
+        ("<=  2.0.0", "0.2.9", false),
+        ("<    2.0.0", "1.9999.9999", false),
+        ("<\t2.0.0", "0.2.9", false),
+        (">=0.1.97", "v0.1.97", false),
+        (">=0.1.97", "0.1.97", false),
+        ("0.1.20 || 1.2.4", "1.2.4", false),
+        ("0.1.20 || >1.2.4", "1.2.4", false),
+        ("0.1.20 || 1.2.4", "1.2.3", false),
+        ("0.1.20 || 1.2.4", "0.1.20", false),
+        (">=0.2.3 || <0.0.1", "0.0.0", false),
+        (">=0.2.3 || <0.0.1", "0.2.3", false),
+        (">=0.2.3 || <0.0.1", "0.2.4", false),
+        ("||", "1.3.4", false),
+        ("2.x.x", "2.1.3", false),
+        ("1.2.x", "1.2.3", false),
+        ("1.2.x || 2.x", "2.1.3", false),
+        ("1.2.x || 2.x", "1.2.3", false),
+        ("x", "1.2.3", false),
+        ("2.*.*", "2.1.3", false),
+        ("1.2.*", "1.2.3", false),
+        ("1.2.* || 2.*", "2.1.3", false),
+        ("1.2.* || 2.*", "1.2.3", false),
+        ("2", "2.1.2", false),
+        ("2.3", "2.3.1", false),
+        ("~2.4", "2.4.0", false),
+        ("~2.4", "2.4.5", false),
+        ("~>3.2.1", "3.2.2", false),
+        ("~1", "1.2.3", false),
+        ("~>1", "1.2.3", false),
+        ("~> 1", "1.2.3", false),
+        ("~1.0", "1.0.2", false),
+        ("~ 1.0", "1.0.2", false),
+        (">=1", "1.0.0", false),
+        (">= 1", "1.0.0", false),
+        ("<1.2", "1.1.1", false),
+        ("< 1.2", "1.1.1", false),
+        ("1", "1.0.0beta", false),
+        ("~v0.5.4-pre", "0.5.5", false),
+        ("~v0.5.4-pre", "0.5.4", false),
+        ("=0.7.x", "0.7.2", false),
+        (">=0.7.x", "0.7.2", false),
+        ("=0.7.x", "0.7.0-asdf", false),
+        (">=0.7.x", "0.7.0-asdf", false),
+        ("<=0.7.x", "0.6.2", false),
+        (">0.2.3 >0.2.4 <=0.2.5", "0.2.5", false),
+        (">=0.2.3 <=0.2.4", "0.2.4", false),
+        ("1.0.0 - 2.0.0", "2.0.0", false),
+        ("^1", "0.0.0-0", false),
+        ("^3.0.0", "2.0.0", false),
+        ("^1.0.0 || ~2.0.1", "2.0.0", false),
+        ("^0.1.0 || ~3.0.1 || 5.0.0", "3.2.0", false),
+        ("^0.1.0 || ~3.0.1 || 5.0.0", "1.0.0beta", false),
+        ("^0.1.0 || ~3.0.1 || 5.0.0", "5.0.0-0", false),
+        ("^0.1.0 || ~3.0.1 || >4 <=5.0.0", "3.5.0", false),
+        ("0.7.x", "0.7.2-beta", true),
+    ];
+
+    const VERSION_LT_RANGE: &[(&str, &str, bool)] = &[
+        ("~1.2.2", "1.2.1", false),
+        ("~0.6.1-1", "0.6.1-0", false),
+        ("1.0.0 - 2.0.0", "0.0.1", false),
+        ("1.0.0-beta.2", "1.0.0-beta.1", false),
+        ("1.0.0", "0.0.0", false),
+        (">=2.0.0", "1.1.1", false),
+        (">=2.0.0", "1.2.9", false),
+        (">2.0.0", "2.0.0", false),
+        ("0.1.20 || 1.2.4", "0.1.5", false),
+        ("2.x.x", "1.0.0", false),
+        ("1.2.x", "1.1.0", false),
+        ("1.2.x || 2.x", "1.0.0", false),
+        ("2.*.*", "1.0.1", false),
+        ("1.2.*", "1.1.3", false),
+        ("1.2.* || 2.*", "1.1.9999", false),
+        ("2", "1.0.0", false),
+        ("2.3", "2.2.2", false),
+        ("~2.4", "2.3.0", false),
+        ("~2.4", "2.3.5", false),
+        ("~>3.2.1", "3.2.0", false),
+        ("~1", "0.2.3", false),
+        ("~>1", "0.2.4", false),
+        ("~> 1", "0.2.3", false),
+        ("~1.0", "0.1.2", false),
+        ("~ 1.0", "0.1.0", false),
+        (">1.2", "1.2.0", false),
+        ("> 1.2", "1.2.1", false),
+        ("1", "0.0.0beta", false),
+        ("~v0.5.4-pre", "0.5.4-alpha", false),
+        ("=0.7.x", "0.6.0", false),
+        ("=0.7.x", "0.6.0-asdf", false),
+        (">=0.7.x", "0.6.0", false),
+        ("1.0.0 - 2.0.0", "0.2.3", false),
+        ("1.0.0", "0.0.1", false),
+        (">=2.0.0", "1.0.0", false),
+        (">=2.0.0", "1.9999.9999", false),
+        (">2.0.0", "1.2.9", false),
+        ("2.x.x", "1.1.3", false),
+        ("1.2.x", "1.1.3", false),
+        ("1.2.x || 2.x", "1.1.3", false),
+        ("2.*.*", "1.1.3", false),
+        ("1.2.* || 2.*", "1.1.3", false),
+        ("2", "1.9999.9999", false),
+        ("2.3", "2.2.1", false),
+        ("~>3.2.1", "2.3.2", false),
+        ("~>1", "0.2.3", false),
+        ("~1.0", "0.0.0", false),
+        (">1", "1.0.0", false),
+        ("2", "1.0.0beta", false),
+        (">1", "1.0.0beta", false),
+        ("> 1", "1.0.0beta", false),
+        ("=0.7.x", "0.6.2", false),
+        ("=0.7.x", "0.7.0-asdf", false),
+        ("^1", "1.0.0-0", false),
+        (">=0.7.x", "0.7.0-asdf", false),
+        ("1", "1.0.0beta", false),
+        (">=0.7.x", "0.6.2", false),
+        (">1.2.3", "1.3.0-alpha", false),
+    ];
+
+    const VERSION_NOT_LT_RANGE: &[(&str, &str, bool)] = &[
+        ("~ 1.0", "1.1.0", false),
+        ("~0.6.1-1", "0.6.1-1", false),
+        ("1.0.0 - 2.0.0", "1.2.3", false),
+        ("1.0.0 - 2.0.0", "2.9.9", false),
+        ("1.0.0", "1.0.0", false),
+        (">=*", "0.2.4", false),
+        ("", "1.0.0", false),
+        ("*", "1.2.3", false),
+        (">=1.0.0", "1.0.0", false),
+        (">=1.0.0", "1.0.1", false),
+        (">=1.0.0", "1.1.0", false),
+        (">1.0.0", "1.0.1", false),
+        (">1.0.0", "1.1.0", false),
+        ("<=2.0.0", "2.0.0", false),
+        ("<=2.0.0", "1.9999.9999", false),
+        ("<=2.0.0", "0.2.9", false),
+        ("<2.0.0", "1.9999.9999", false),
+        ("<2.0.0", "0.2.9", false),
+        (">= 1.0.0", "1.0.0", false),
+        (">=  1.0.0", "1.0.1", false),
+        (">=   1.0.0", "1.1.0", false),
+        ("> 1.0.0", "1.0.1", false),
+        (">  1.0.0", "1.1.0", false),
+        ("<=   2.0.0", "2.0.0", false),
+        ("<= 2.0.0", "1.9999.9999", false),
+        ("<=  2.0.0", "0.2.9", false),
+        ("<    2.0.0", "1.9999.9999", false),
+        ("<\t2.0.0", "0.2.9", false),
+        (">=0.1.97", "v0.1.97", false),
+        (">=0.1.97", "0.1.97", false),
+        ("0.1.20 || 1.2.4", "1.2.4", false),
+        ("0.1.20 || >1.2.4", "1.2.4", false),
+        ("0.1.20 || 1.2.4", "1.2.3", false),
+        ("0.1.20 || 1.2.4", "0.1.20", false),
+        (">=0.2.3 || <0.0.1", "0.0.0", false),
+        (">=0.2.3 || <0.0.1", "0.2.3", false),
+        (">=0.2.3 || <0.0.1", "0.2.4", false),
+        ("||", "1.3.4", false),
+        ("2.x.x", "2.1.3", false),
+        ("1.2.x", "1.2.3", false),
+        ("1.2.x || 2.x", "2.1.3", false),
+        ("1.2.x || 2.x", "1.2.3", false),
+        ("x", "1.2.3", false),
+        ("2.*.*", "2.1.3", false),
+        ("1.2.*", "1.2.3", false),
+        ("1.2.* || 2.*", "2.1.3", false),
+        ("1.2.* || 2.*", "1.2.3", false),
+        ("2", "2.1.2", false),
+        ("2.3", "2.3.1", false),
+        ("~2.4", "2.4.0", false),
+        ("~2.4", "2.4.5", false),
+        ("~>3.2.1", "3.2.2", false),
+        ("~1", "1.2.3", false),
+        ("~>1", "1.2.3", false),
+        ("~> 1", "1.2.3", false),
+        ("~1.0", "1.0.2", false),
+        ("~ 1.0", "1.0.2", false),
+        (">=1", "1.0.0", false),
+        (">= 1", "1.0.0", false),
+        ("<1.2", "1.1.1", false),
+        ("< 1.2", "1.1.1", false),
+        ("~v0.5.4-pre", "0.5.5", false),
+        ("~v0.5.4-pre", "0.5.4", false),
+        ("=0.7.x", "0.7.2", false),
+        (">=0.7.x", "0.7.2", false),
+        ("<=0.7.x", "0.6.2", false),
+        (">0.2.3 >0.2.4 <=0.2.5", "0.2.5", false),
+        (">=0.2.3 <=0.2.4", "0.2.4", false),
+        ("1.0.0 - 2.0.0", "2.0.0", false),
+        ("^3.0.0", "4.0.0", false),
+        ("^1.0.0 || ~2.0.1", "2.0.0", false),
+        ("^0.1.0 || ~3.0.1 || 5.0.0", "3.2.0", false),
+        ("^0.1.0 || ~3.0.1 || 5.0.0", "1.0.0beta", false),
+        ("^0.1.0 || ~3.0.1 || 5.0.0", "5.0.0-0", false),
+        ("^0.1.0 || ~3.0.1 || >4 <=5.0.0", "3.5.0", false),
+        ("^1.0.0alpha", "1.0.0beta", false),
+        ("~1.0.0alpha", "1.0.0beta", false),
+        ("^1.0.0-alpha", "1.0.0beta", false),
+        ("~1.0.0-alpha", "1.0.0beta", false),
+        ("^1.0.0-alpha", "1.0.0-beta", false),
+        ("~1.0.0-alpha", "1.0.0-beta", false),
+        ("=0.1.0", "1.0.0", false),
+        (">1.2.3", "1.3.0-alpha", true),
+    ];
+
+    fn assert_outside(
+        cases: &[(&str, &str, bool)],
+        direction: OutsideDirection,
+        include_prerelease: bool,
+        expected: bool,
+    ) {
+        for (range, version, explicit_include) in cases {
+            let include_prerelease = include_prerelease || *explicit_include;
+            let range = Range::parse(range).unwrap();
+            let version = Version::parse(version).unwrap();
+
+            let result = range
+                .outside(&version, direction, include_prerelease)
+                .expect("outside should always have comparator bounds");
+            let message = format!(
+                "{}outside({}, {}, {}, include_prerelease={})",
+                if expected { "" } else { "!" },
+                version,
+                range,
+                direction,
+                include_prerelease
+            );
+
+            if expected {
+                assert!(result, "{}", message);
+            } else {
+                assert!(!result, "{}", message);
+            }
+        }
+    }
+
+    #[test]
+    fn greater_than_range() {
+        assert_outside(VERSION_GT_RANGE, OutsideDirection::Higher, false, true);
+    }
+
+    #[test]
+    fn less_than_range() {
+        assert_outside(VERSION_LT_RANGE, OutsideDirection::Lower, false, true);
+    }
+
+    #[test]
+    fn not_greater_than_range() {
+        assert_outside(VERSION_NOT_GT_RANGE, OutsideDirection::Higher, false, false);
+    }
+
+    #[test]
+    fn not_less_than_range() {
+        assert_outside(VERSION_NOT_LT_RANGE, OutsideDirection::Lower, false, false);
+    }
+
+    #[test]
+    fn outside_with_bad_direction_returns_error() {
+        let range = Range::parse(">1.5.0").unwrap();
+        let version = Version::parse("1.2.3").unwrap();
+
+        let result = OutsideDirection::try_from('x')
+            .and_then(|direction| range.outside(&version, direction, false));
+
+        assert!(matches!(
+            result,
+            Err(RangeError::InvalidOutsideDirection('x'))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod satisfies_ranges_tests {
+    use super::*;
+
+    macro_rules! refute {
+        ($e:expr) => {
+            assert!(!$e)
+        };
+        ($e:expr, $msg:expr) => {
+            assert!(!$e, $msg)
+        };
+    }
+
+    #[test]
+    fn greater_than_equals() {
+        let parsed = Range::parse(">=1.2.3").expect("unable to parse");
+
+        refute!(parsed.satisfies(&(0, 2, 3).into()), "major too low");
+        refute!(parsed.satisfies(&(1, 1, 3).into()), "minor too low");
+        refute!(parsed.satisfies(&(1, 2, 2).into()), "patch too low");
+        assert!(parsed.satisfies(&(1, 2, 3).into()), "exact");
+        assert!(parsed.satisfies(&(2, 2, 3).into()), "above");
+    }
+
+    #[test]
+    fn greater_than() {
+        let parsed = Range::parse(">1.2.3").expect("unable to parse");
+
+        refute!(parsed.satisfies(&(0, 2, 3).into()), "major too low");
+        refute!(parsed.satisfies(&(1, 1, 3).into()), "minor too low");
+        refute!(parsed.satisfies(&(1, 2, 2).into()), "patch too low");
+        refute!(parsed.satisfies(&(1, 2, 3).into()), "exact");
+        assert!(parsed.satisfies(&(1, 2, 4).into()), "above");
+    }
+
+    #[test]
+    fn exact() {
+        let parsed = Range::parse("=1.2.3").expect("unable to parse");
+
+        refute!(parsed.satisfies(&(1, 2, 2).into()), "patch too low");
+        assert!(parsed.satisfies(&(1, 2, 3).into()), "exact");
+        refute!(parsed.satisfies(&(1, 2, 4).into()), "above");
+    }
+
+    #[test]
+    fn less_than() {
+        let parsed = Range::parse("<1.2.3").expect("unable to parse");
+
+        assert!(parsed.satisfies(&(0, 2, 3).into()), "major below");
+        assert!(parsed.satisfies(&(1, 1, 3).into()), "minor below");
+        assert!(parsed.satisfies(&(1, 2, 2).into()), "patch below");
+        refute!(parsed.satisfies(&(1, 2, 3).into()), "exact");
+        refute!(parsed.satisfies(&(1, 2, 4).into()), "above");
+    }
+
+    #[test]
+    fn less_than_equals() {
+        let parsed = Range::parse("<=1.2.3").expect("unable to parse");
+
+        assert!(parsed.satisfies(&(0, 2, 3).into()), "major below");
+        assert!(parsed.satisfies(&(1, 1, 3).into()), "minor below");
+        assert!(parsed.satisfies(&(1, 2, 2).into()), "patch below");
+        assert!(parsed.satisfies(&(1, 2, 3).into()), "exact");
+        refute!(parsed.satisfies(&(1, 2, 4).into()), "above");
+    }
+
+    #[test]
+    fn less_than_equals_major() {
+        let parsed = Range::parse("<=1").expect("unable to parse");
+
+        assert!(parsed.satisfies(&(0, 2, 3).into()), "major below");
+        assert!(parsed.satisfies(&(1, 1, 3).into()), "minor below");
+        assert!(parsed.satisfies(&(1, 2, 2).into()), "minor below");
+        assert!(parsed.satisfies(&(1, 2, 3).into()), "minor below");
+        assert!(parsed.satisfies(&(1, 2, 4).into()), "minor below");
+        refute!(parsed.satisfies(&(2, 0, 0).into()), "above");
+    }
+
+    #[test]
+    fn less_than_equals_minor() {
+        let parsed = Range::parse("<=1.2").expect("unable to parse");
+
+        assert!(parsed.satisfies(&(0, 2, 3).into()), "major below");
+        assert!(parsed.satisfies(&(1, 1, 3).into()), "minor below");
+        assert!(parsed.satisfies(&(1, 2, 1).into()), "patch below");
+        assert!(parsed.satisfies(&(1, 2, 5).into()), "patch below");
+        refute!(parsed.satisfies(&(1, 3, 0).into()), "above");
+    }
+
+    #[test]
+    fn only_major() {
+        let parsed = Range::parse("1").expect("unable to parse");
+
+        refute!(parsed.satisfies(&(0, 2, 3).into()), "major below");
+        assert!(parsed.satisfies(&(1, 0, 0).into()), "exact bottom of range");
+        assert!(parsed.satisfies(&(1, 2, 2).into()), "middle");
+        refute!(parsed.satisfies(&(2, 0, 0).into()), "exact top of range");
+        refute!(parsed.satisfies(&(2, 7, 3).into()), "above");
+    }
+
+    #[test]
+    fn pre_release_version() {
+        let range = Range::parse("^2").unwrap();
+
+        refute!(
+            range.satisfies(&Version::parse("2.0.0-alpha.0").unwrap()),
+            "below"
+        );
+        refute!(
+            range.satisfies(&Version::parse("2.1.0-alpha.0").unwrap()),
+            "above but pre-release"
+        );
+    }
+
+    #[test]
+    fn pre_release_range() {
+        let range = Range::parse("^1.2.3-rc.4").unwrap();
+
+        refute!(range.satisfies(&Version::parse("1.2.2").unwrap()), "below");
+        assert!(
+            range.satisfies(&Version::parse("1.2.3").unwrap()),
+            "equal non-prerelease"
+        );
+        assert!(range.satisfies(&Version::parse("1.2.4").unwrap()), "above");
+    }
+
+    #[test]
+    fn pre_release_version_and_range() {
+        let range = Range::parse("^1.2.3-rc.4").unwrap();
+
+        refute!(
+            range.satisfies(&Version::parse("1.2.3-rc.3").unwrap()),
+            "below"
+        );
+        assert!(
+            range.satisfies(&Version::parse("1.2.3-rc.4").unwrap()),
+            "equal"
+        );
+        assert!(
+            range.satisfies(&Version::parse("1.2.3-rc.5").unwrap()),
+            "above"
+        );
+        refute!(
+            range.satisfies(&Version::parse("1.2.4-rc.6").unwrap()),
+            "above patch but pre-release"
+        );
+    }
+}
+
+/// https://github.com/npm/node-semver/blob/master/test/fixtures/range-parse.js
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pretty_assertions::assert_eq;
+
+    macro_rules! range_parse_tests {
+        ($($name:ident => $vals:expr),+ ,$(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    let [input, expected] = $vals;
+
+                    let parsed = Range::parse(input).expect("unable to parse");
+
+                    assert_eq!(expected, parsed.to_string());
+                }
+            )+
+        }
+
+    }
+
+    range_parse_tests![
+        //       [input,   parsed and then `to_string`ed]
+        exact => ["1.0.0", "1.0.0"],
+        major_minor_patch_range => ["1.0.0 - 2.0.0", ">=1.0.0 <=2.0.0"],
+        only_major_versions =>  ["1 - 2", ">=1.0.0 <3.0.0-0"],
+        only_major_and_minor => ["1.0 - 2.0", ">=1.0.0 <2.1.0-0"],
+        mixed_major_minor => ["1.2 - 3.4.5", ">=1.2.0 <=3.4.5"],
+        mixed_major_minor_2 => ["1.2.3 - 3.4", ">=1.2.3 <3.5.0-0"],
+        minor_minor_range => ["1.2 - 3.4", ">=1.2.0 <3.5.0-0"],
+        single_sided_only_major => ["1", ">=1.0.0 <2.0.0-0"],
+        single_sided_lower_equals_bound =>  [">=1.0.0", ">=1.0.0"],
+        single_sided_lower_equals_bound_2 => [">=0.1.97", ">=0.1.97"],
+        single_sided_lower_bound => [">1.0.0", ">1.0.0"],
+        single_sided_upper_equals_bound => ["<=2.0.0", "<=2.0.0"],
+        single_sided_upper_equals_bound_with_minor => ["<=2.0", "<=2.0.900719925474099"],
+        single_sided_upper_bound => ["<2.0.0", "<2.0.0"],
+        major_and_minor => ["2.3", ">=2.3.0 <2.4.0-0"],
+        major_dot_x => ["2.x", ">=2.0.0 <3.0.0-0"],
+        x_and_asterisk_version => ["2.x.x", ">=2.0.0 <3.0.0-0"],
+        patch_x => ["1.2.x", ">=1.2.0 <1.3.0-0"],
+        minor_asterisk_patch_asterisk => ["2.*.*", ">=2.0.0 <3.0.0-0"],
+        patch_asterisk => ["1.2.*", ">=1.2.0 <1.3.0-0"],
+        caret_zero => ["^0", "<1.0.0-0"],
+        caret_zero_minor => ["^0.1", ">=0.1.0 <0.2.0-0"],
+        caret_one => ["^1.0", ">=1.0.0 <2.0.0-0"],
+        caret_minor => ["^1.2", ">=1.2.0 <2.0.0-0"],
+        caret_patch => ["^0.0.1", ">=0.0.1 <0.0.2-0"],
+        caret_with_patch =>   ["^0.1.2", ">=0.1.2 <0.2.0-0"],
+        caret_with_patch_2 => ["^1.2.3", ">=1.2.3 <2.0.0-0"],
+        tilde_one => ["~1", ">=1.0.0 <2.0.0-0"],
+        tilde_minor => ["~1.0", ">=1.0.0 <1.1.0-0"],
+        tilde_minor_2 => ["~2.4", ">=2.4.0 <2.5.0-0"],
+        tilde_with_greater_than_patch => ["~>3.2.1", ">=3.2.1 <3.3.0-0"],
+        tilde_major_minor_zero => ["~1.1.0", ">=1.1.0 <1.2.0-0"],
+        grater_than_equals_one => [">=1", ">=1.0.0"],
+        greater_than_one => [">1", ">=2.0.0"],
+        less_than_one_dot_two => ["<1.2", "<1.2.0-0"],
+        greater_than_one_dot_two => [">1.2", ">=1.3.0"],
+        greater_than_with_prerelease => [">1.1.0-beta-10", ">1.1.0-beta-10"],
+        either_one_version_or_the_other => ["0.1.20 || 1.2.4", "0.1.20||1.2.4"],
+        either_one_version_range_or_another => [">=0.2.3 || <0.0.1", ">=0.2.3||<0.0.1"],
+        either_x_version_works => ["1.2.x || 2.x", ">=1.2.0 <1.3.0-0||>=2.0.0 <3.0.0-0"],
+        either_asterisk_version_works => ["1.2.* || 2.*", ">=1.2.0 <1.3.0-0||>=2.0.0 <3.0.0-0"],
+        one_two_three_or_greater_than_four => ["1.2.3 || >4", "1.2.3||>=5.0.0"],
+        any_version_asterisk => ["*", ">=0.0.0"],
+        any_version_x => ["x", ">=0.0.0"],
+        whitespace_1 => [">= 1.0.0", ">=1.0.0"],
+        whitespace_2 => [">=  1.0.0", ">=1.0.0"],
+        whitespace_3 => [">=   1.0.0", ">=1.0.0"],
+        whitespace_4 => ["> 1.0.0", ">1.0.0"],
+        whitespace_5 => [">  1.0.0", ">1.0.0"],
+        whitespace_6 => ["<=   2.0.0", "<=2.0.0"],
+        whitespace_7 => ["<= 2.0.0", "<=2.0.0"],
+        whitespace_8 => ["<=  2.0.0", "<=2.0.0"],
+        whitespace_9 => ["<    2.0.0", "<2.0.0"],
+        whitespace_10 => ["<\t2.0.0", "<2.0.0"],
+        whitespace_11 => ["^ 1", ">=1.0.0 <2.0.0-0"],
+        whitespace_12 => ["~> 1", ">=1.0.0 <2.0.0-0"],
+        whitespace_13 => ["~ 1.0", ">=1.0.0 <1.1.0-0"],
+        beta          => ["^0.0.1-beta", ">=0.0.1-beta <0.0.2-0"],
+        beta_tilde => ["~1.2.3-beta", ">=1.2.3-beta <1.3.0-0"],
+        beta_4        => ["^1.2.3-beta.4", ">=1.2.3-beta.4 <2.0.0-0"],
+        pre_release_on_both => ["1.0.0-alpha - 2.0.0-beta", ">=1.0.0-alpha <=2.0.0-beta"],
+        single_sided_lower_bound_with_pre_release => [">1.0.0-alpha", ">1.0.0-alpha"],
+        space_separated1 => [">=1.2.3 <4.5.6", ">=1.2.3 <4.5.6"],
+        garbage1 => ["1.2.3 foo", "1.2.3"],
+        garbage2 => ["foo 1.2.3", "1.2.3"],
+        garbage3 => ["~1.y 1.2.3", "1.2.3"],
+        garbage4 => ["1.2.3 ~1.y", "1.2.3"],
+        loose1 => [">01.02.03", ">1.2.3"],
+        loose2 => ["~1.2.3beta", ">=1.2.3-beta <1.3.0-0"],
+        caret_weird => ["^ 1.2 ^ 1", ">=1.2.0 <2.0.0-0"],
+        loose_eq1 => ["=0.7", ">=0.7.0 <0.8.0-0"],
+        loose_eq2 => ["=1", ">=1.0.0 <2.0.0-0"],
+        consistent => ["^1.0.1", ">=1.0.1 <2.0.0-0"],
+        consistent2 => [">=1.0.1 <2.0.0-0", ">=1.0.1 <2.0.0-0"],
+    ];
+
+    /*
+    // And these weirdos that I don't know what to do with.
+    [">X", "<0.0.0-0"],
+    ["<X", "<0.0.0-0"],
+    ["<x <* || >* 2.x", "<0.0.0-0"],
+    */
+}
+
+#[cfg(test)]
+mod ranges {
+    use super::*;
+
+    #[test]
+    fn one() {
+        let r = BoundSet::new(
+            Bound::Lower(Predicate::Including((1, 2, 0).into())),
+            Bound::Upper(Predicate::Excluding((3, 3, 4).into())),
+        )
+        .unwrap();
+
+        assert_eq!(r.to_string(), ">=1.2.0 <3.3.4")
+    }
+}
+
+#[cfg(test)]
+mod max_satisfying {
+    use super::*;
+
+    fn assert_max_satisfying(versions: Vec<&str>, range: &str, expected: &str) {
+        let versions: Vec<_> = versions
+            .into_iter()
+            .map(|s| Version::parse(s).unwrap())
+            .collect();
+        let range = Range::parse(range).unwrap();
+        let result = range.max_satisfying(&versions);
+
+        assert_eq!(
+            result,
+            Some(&Version::parse(expected).unwrap()),
+            "expected: {}, got: {:?}",
+            expected,
+            result
+        );
+    }
+
+    #[test]
+    fn test_max_satisfying() {
+        let cases = vec![
+            (vec!["1.2.3", "1.2.4"], "1.2", "1.2.4"),
+            (vec!["1.2.4", "1.2.3"], "1.2", "1.2.4"),
+            (vec!["1.2.3", "1.2.4", "1.2.5", "1.2.6"], "~1.2.3", "1.2.6"),
+            (
+                vec!["1.1.0", "1.2.0", "1.2.1", "1.3.0", "2.0.0", "2.1.0"],
+                "~2.0.0",
+                "2.0.0",
+            ),
+        ];
+
+        for case in cases {
+            assert_max_satisfying(case.0, case.1, case.2);
+        }
+    }
+
+    #[test]
+    fn test_max_satisfying_empty() {
+        let range = Range::parse("~1.2.3").unwrap();
+        let versions = vec![];
+        let result = range.max_satisfying(&versions);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_max_satisfying_none() {
+        let range = Range::parse(">=1.0.0 <2.0.0").unwrap();
+        let versions: Vec<_> = vec!["2.0.0", "0.1.0"]
+            .iter()
+            .map(|s| Version::parse(s).unwrap())
+            .collect();
+        let result = range.max_satisfying(&versions);
+
+        assert_eq!(result, None);
+    }
+}
+
+#[cfg(test)]
+mod min_satisfying {
+    use super::*;
+
+    fn assert_min_satisfying(versions: Vec<&str>, range: &str, expected: &str) {
+        let versions: Vec<_> = versions
+            .into_iter()
+            .map(|s| Version::parse(s).unwrap())
+            .collect();
+        let range = Range::parse(range).unwrap();
+        let result = range.min_satisfying(&versions);
+
+        assert_eq!(
+            result,
+            Some(&Version::parse(expected).unwrap()),
+            "expected: {}, got: {:?}",
+            expected,
+            result
+        );
+    }
+
+    #[test]
+    fn test_min_satisfying() {
+        let cases = vec![
+            (vec!["1.2.3", "1.2.4"], "1.2", "1.2.3"),
+            (vec!["1.2.4", "1.2.3"], "1.2", "1.2.3"),
+            (vec!["1.2.3", "1.2.4", "1.2.5", "1.2.6"], "~1.2.3", "1.2.3"),
+            (
+                vec!["1.1.0", "1.2.0", "1.2.1", "1.3.0", "2.0.0", "2.1.0"],
+                "~2.0.0",
+                "2.0.0",
+            ),
+        ];
+
+        for case in cases {
+            assert_min_satisfying(case.0, case.1, case.2);
+        }
+    }
+
+    #[test]
+    fn test_min_satisfying_empty() {
+        let range = Range::parse("~1.2.3").unwrap();
+        let versions = vec![];
+        let result = range.min_satisfying(&versions);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_min_satisfying_none() {
+        let range = Range::parse(">=1.0.0 <2.0.0").unwrap();
+        let versions: Vec<_> = vec!["2.0.0", "0.1.0"]
+            .iter()
+            .map(|s| Version::parse(s).unwrap())
+            .collect();
+        let result = range.min_satisfying(&versions);
+
+        assert_eq!(result, None);
+    }
+}
+
+#[cfg(test)]
+mod min_version {
+    use super::*;
+
+    #[test]
+    fn min_version_test() {
+        // [range, minimum]
+        let tests = vec![
+            // Stars
+            ("*", Some("0.0.0")),
+            ("* || >=2", Some("0.0.0")),
+            (">=2 || *", Some("0.0.0")),
+            (">2 || *", Some("0.0.0")),
+            // equal
+            ("1.0.0", Some("1.0.0")),
+            ("1.0", Some("1.0.0")),
+            ("1.0.x", Some("1.0.0")),
+            ("1.0.*", Some("1.0.0")),
+            ("1", Some("1.0.0")),
+            ("1.x.x", Some("1.0.0")),
+            ("1.x.x", Some("1.0.0")),
+            ("1.*.x", Some("1.0.0")),
+            ("1.x.*", Some("1.0.0")),
+            ("1.x", Some("1.0.0")),
+            ("1.*", Some("1.0.0")),
+            ("=1.0.0", Some("1.0.0")),
+            // Tilde
+            ("~1.1.1", Some("1.1.1")),
+            ("~1.1.1-beta", Some("1.1.1-beta")),
+            ("~1.1.1 || >=2", Some("1.1.1")),
+            // Carot
+            ("^1.1.1", Some("1.1.1")),
+            ("^1.1.1-beta", Some("1.1.1-beta")),
+            ("^1.1.1 || >=2", Some("1.1.1")),
+            ("^2.16.2 ^2.16", Some("2.16.2")),
+            // "-" operator
+            ("1.1.1 - 1.8.0", Some("1.1.1")),
+            ("1.1 - 1.8.0", Some("1.1.0")),
+            // Less / less or equal
+            ("<2", Some("0.0.0")),
+            ("<0.0.0-beta", Some("0.0.0-0")),
+            ("<0.0.1-beta", Some("0.0.0")),
+            ("<2 || >4", Some("0.0.0")),
+            (">4 || <2", Some("0.0.0")),
+            ("<=2 || >=4", Some("0.0.0")),
+            (">=4 || <=2", Some("0.0.0")),
+            ("<0.0.0-beta >0.0.0-alpha", Some("0.0.0-alpha.0")),
+            (">0.0.0-alpha <0.0.0-beta", Some("0.0.0-alpha.0")),
+            // Greater than or equal
+            (">=1.1.1 <2 || >=2.2.2 <3", Some("1.1.1")),
+            (">=2.2.2 <3 || >=1.1.1 <2", Some("1.1.1")),
+            // Greater than but not equal
+            (">1.0.0", Some("1.0.1")),
+            (">1.0.0-0", Some("1.0.0-0.0")),
+            (">1.0.0-beta", Some("1.0.0-beta.0")),
+            (">2 || >1.0.0", Some("1.0.1")),
+            (">2 || >1.0.0-0", Some("1.0.0-0.0")),
+            (">2 || >1.0.0-beta", Some("1.0.0-beta.0")),
+        ];
+
+        for (range, version) in tests {
+            let parsed_range = Range::parse(range).unwrap();
+            let parsed_version = version.map(|v| Version::parse(v).unwrap());
+            assert_eq!(
+                parsed_range.min_version(),
+                parsed_version,
+                "expected min_version of {:?} to be {:?}",
+                range,
+                version
+            );
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize() {
+        let range = Range::parse("~1.2.3").unwrap();
+        let serialized = serde_json::to_string(&range).unwrap();
+        let deserialized: Range = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(range, deserialized);
+    }
+}

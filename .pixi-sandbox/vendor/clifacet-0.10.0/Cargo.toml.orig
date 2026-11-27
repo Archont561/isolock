@@ -1,0 +1,71 @@
+[package]
+name = "clifacet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Build one CLI command; run it noninteractive, as a questionnaire, or as a TUI"
+readme = "../../README.md"
+# Scenarios are repository-only (`tools/_lib/check_packages.py`), and their step bindings
+# read the `.feature` files at compile time, so neither half ships.
+exclude = ["features/", "tests/*_bdd.rs"]
+
+[features]
+# Each frontend is a dependency boundary: an application enables the ones it uses and
+# pays for no others. The TUI's components are public either way — see `tui` in the docs.
+default = []
+interactive = ["dep:inquire"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:futures-core"]
+# Serialization for `Failure`, `FailureKind`, `Secret`, and structured JSON output mode `--json` (decision-25).
+serde = ["dep:serde", "dep:serde_json"]
+# Machine-readable CLI schema introspection (decision-25, CLI-73).
+schema = ["serde"]
+# Pluggable skill rendering for agent documentation (decision-25, CLI-74).
+skill = ["schema"]
+# Built-in MiniJinja skill renderer for agent documentation (decision-25, CLI-75).
+skill-minijinja = ["skill", "dep:minijinja"]
+# Model Context Protocol stdio tool server (decision-25, CLI-77, CLI-86).
+mcp = ["schema", "async", "tokio"]
+# Context-aware dynamic shell completions (decision-25, CLI-78).
+completions = ["schema"]
+# Native async command execution traits, cancellation, and progress (decision-26, CLI-79).
+async = []
+# Pluggable `tokio` runtime executor and signal integration (decision-26, CLI-80).
+tokio = ["async", "dep:tokio"]
+# `clifacet::settings::toml`, the settings loader for the format most applications
+# already have (CLI-51). Off by default: a program that never reads a settings file pays
+# nothing for the parser.
+settings-toml = ["dep:toml_edit"]
+# `clifacet::settings::figment`, the Figment-backed layered settings loader (CLI-59).
+# Off by default: an application opting into Figment enables it.
+settings-figment = ["dep:figment", "serde", "dep:toml_edit"]
+
+[dependencies]
+clifacet-macros.workspace = true
+clap.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror.workspace = true
+toml_edit = { workspace = true, optional = true }
+figment = { workspace = true, optional = true }
+inquire = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true, features = ["event-stream"] }
+futures-core = { workspace = true, optional = true }
+minijinja = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "signal", "time", "macros", "sync"] }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+trybuild.workspace = true
+rstest.workspace = true
+rstest-bdd.workspace = true
+rstest-bdd-macros.workspace = true
+# What an application would build a JSON failure body with; the tests read it back.
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+
+[lints]
+workspace = true

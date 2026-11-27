@@ -1,0 +1,69 @@
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "*"
+  pull_request:
+
+name: CI
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: "clippy, rustfmt"
+      - uses: Swatinem/rust-cache@v2
+
+      # make sure all code has been formatted with rustfmt
+      - name: check rustfmt
+        run: cargo fmt -- --check --color always
+
+      # run clippy to verify we have no warnings
+      - run: cargo fetch
+      - name: cargo clippy
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo clippy --manifest-path integ/Cargo.toml --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fetch
+      - name: cargo test build
+        run: |
+          cargo build --tests --all-features
+          cargo build --manifest-path integ/Cargo.toml --tests
+      - name: cargo test
+        run: |
+          cargo test --all-features
+          cargo test --manifest-path integ/Cargo.toml
+
+  deny-check:
+    name: cargo-deny
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  publish-check:
+    name: Publish Check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fetch
+      - name: cargo publish check
+        run: cargo publish --dry-run
+
+  test_success:
+    runs-on: ubuntu-24.04
+    needs: [lint, test, publish-check, deny-check]
+    steps:
+      - run: echo "All test jobs passed"

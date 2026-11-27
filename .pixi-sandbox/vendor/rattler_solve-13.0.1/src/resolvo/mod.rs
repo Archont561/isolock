@@ -1,0 +1,1437 @@
+//! Provides an solver implementation based on the [`resolvo`] crate.
+
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    fmt::{Display, Formatter},
+    marker::PhantomData,
+    sync::Arc,
+};
+
+use conda_sorting::SolvableSorter;
+use itertools::Itertools;
+use rattler_conda_types::MatchSpecCondition;
+use rattler_conda_types::{
+    Channel, GenericVirtualPackage, MatchSpec, Matches, NamelessMatchSpec, PackageName,
+    PackageNameMatcher, ParseMatchSpecError, ParseMatchSpecOptions, RepoDataRecord,
+    RepodataRevision, SolverResult,
+    package::{ArchiveIdentifier, DistArchiveType},
+};
+use resolvo::{
+    Candidates, Condition, ConditionId, ConditionalRequirement, Dependencies, DependencyProvider,
+    HintDependenciesAvailable, Interner, KnownDependencies, NameId, Problem, SolvableId,
+    Solver as LibSolvRsSolver, SolverCache, StringId, UnsolvableOrCancelled, VersionSetId,
+    VersionSetUnionId,
+    utils::{Pool, VersionSet},
+};
+use url::Url;
+use version_index::VersionIndex;
+
+use crate::{
+    CancellationToken, ChannelPriority, ExcludeNewer, IntoRepoData, SolveError, SolveStrategy,
+    SolverRepoData, SolverTask, priority_tier::PriorityTier,
+    resolvo::conda_sorting::CompareStrategy,
+};
+
+mod conda_sorting;
+mod version_index;
+
+type MatchSpecParseCache = HashMap<String, (Vec<VersionSetId>, Option<ConditionId>)>;
+
+/// A dependency override rule.
+#[derive(Clone)]
+pub struct DependencyOverride {
+    /// Matches packages whose dependencies should be overridden.
+    pub package_matcher: MatchSpec,
+    /// Replaces matching dependencies.
+    pub override_spec: MatchSpec,
+}
+
+/// A [`DependencyOverride`] prepared for fast application: the replacement
+/// spec is pre-rendered to a string so applying the rule does not require
+/// re-serializing the spec for every matching dependency.
+struct PreparedDependencyOverride {
+    /// Matches packages whose dependencies should be overridden.
+    package_matcher: MatchSpec,
+    /// Replaces matching dependencies.
+    override_spec: String,
+}
+
+/// Represents the information required to load available packages into libsolv
+/// for a single channel and platform combination
+#[derive(Clone)]
+pub struct RepoData<'a> {
+    /// The actual records after parsing `repodata.json`
+    pub records: Vec<&'a RepoDataRecord>,
+
+    /// The multichannel the channel of these records belongs to, see
+    /// [`crate::ChannelRepoData`].
+    pub multi_channel: Option<&'a str>,
+}
+
+impl<'a> FromIterator<&'a RepoDataRecord> for RepoData<'a> {
+    fn from_iter<T: IntoIterator<Item = &'a RepoDataRecord>>(iter: T) -> Self {
+        Self {
+            records: Vec::from_iter(iter),
+            multi_channel: None,
+        }
+    }
+}
+
+impl<'a> SolverRepoData<'a> for RepoData<'a> {
+    fn set_multi_channel(&mut self, name: &'a str) {
+        self.multi_channel = Some(name);
+    }
+}
+
+/// Wrapper around `MatchSpec` so that we can use it in the `resolvo` pool
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum SolverMatchSpec<'a> {
+    /// Represents a requirement on another package.
+    MatchSpec(NamelessMatchSpec),
+
+    /// The name already uniquely identifies a single package. So we don't need
+    /// any special "spec". here.
+    Extra,
+
+    /// A helper variant to make sure we can add a lifetime to this enum.
+    _Phantom(PhantomData<&'a ()>),
+}
+
+impl From<NamelessMatchSpec> for SolverMatchSpec<'_> {
+    fn from(value: NamelessMatchSpec) -> Self {
+        SolverMatchSpec::MatchSpec(value)
+    }
+}
+
+impl Display for SolverMatchSpec<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SolverMatchSpec::MatchSpec(spec) => {
+                write!(f, "{spec}")
+            }
+            SolverMatchSpec::Extra => Ok(()),
+            SolverMatchSpec::_Phantom(_) => unreachable!(),
+        }
+    }
+}
+
+impl<'a> VersionSet for SolverMatchSpec<'a> {
+    type V = SolverPackageRecord<'a>;
+}
+
+/// Wrapper around [`RepoDataRecord`] so that we can use it in resolvo pool.
+/// Also represents a virtual package or an extra of a package.
+#[derive(Eq, PartialEq)]
+pub enum SolverPackageRecord<'a> {
+    /// Represents a record from the repodata
+    Record(&'a RepoDataRecord),
+
+    /// Represents a virtual package.
+    VirtualPackage(&'a GenericVirtualPackage),
+
+    /// Represents a named extra for a particular package name. e.g.
+    /// `numpy[blas]`
+    Extra {
+        /// The name of the package
+        package: PackageName,
+
+        /// The extra to activate in the package
+        extra: String,
+    },
+}
+
+impl PartialOrd<Self> for SolverPackageRecord<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SolverPackageRecord<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.name()
+            .cmp(other.name())
+            .then_with(|| self.extra().cmp(&other.extra()))
+            .then_with(|| self.version().cmp(&other.version()))
+            .then_with(|| self.build_number().cmp(&other.build_number()))
+            .then_with(|| self.timestamp().cmp(&other.timestamp()))
+    }
+}
+
+impl SolverPackageRecord<'_> {
+    fn name(&self) -> &PackageName {
+        match self {
+            SolverPackageRecord::Record(rec) => &rec.package_record.name,
+            SolverPackageRecord::Extra { package, .. } => package,
+            SolverPackageRecord::VirtualPackage(rec) => &rec.name,
+        }
+    }
+
+    fn extra(&self) -> Option<&String> {
+        match self {
+            SolverPackageRecord::Extra { extra, .. } => Some(extra),
+            SolverPackageRecord::Record(_) | SolverPackageRecord::VirtualPackage(_) => None,
+        }
+    }
+
+    fn version(&self) -> Option<&rattler_conda_types::Version> {
+        match self {
+            SolverPackageRecord::Record(rec) => Some(rec.package_record.version.version()),
+            SolverPackageRecord::VirtualPackage(rec) => Some(&rec.version),
+            SolverPackageRecord::Extra { .. } => None,
+        }
+    }
+
+    fn track_features(&self) -> &[String] {
+        const EMPTY: [String; 0] = [];
+        match self {
+            SolverPackageRecord::Record(rec) => &rec.package_record.track_features,
+            SolverPackageRecord::Extra { .. } | SolverPackageRecord::VirtualPackage(..) => &EMPTY,
+        }
+    }
+
+    fn build_number(&self) -> u64 {
+        match self {
+            SolverPackageRecord::Record(rec) => rec.package_record.build_number,
+            SolverPackageRecord::Extra { .. } | SolverPackageRecord::VirtualPackage(..) => 0,
+        }
+    }
+
+    fn timestamp(&self) -> Option<jiff::Timestamp> {
+        match self {
+            SolverPackageRecord::Record(rec) => {
+                rec.package_record.timestamp.map(|ts| ts.jiff_timestamp())
+            }
+            SolverPackageRecord::Extra { .. } | SolverPackageRecord::VirtualPackage(..) => None,
+        }
+    }
+}
+
+impl Display for SolverPackageRecord<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SolverPackageRecord::Record(rec) => {
+                write!(f, "{}", rec.package_record)
+            }
+            SolverPackageRecord::Extra { package, extra } => {
+                write!(f, "{}[{}]", package.as_normalized(), extra)
+            }
+            SolverPackageRecord::VirtualPackage(rec) => {
+                write!(f, "{rec}")
+            }
+        }
+    }
+}
+
+/// Represents the type of name that is being used in the pool.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum NameType {
+    /// A simple package
+    Base(String),
+
+    /// An extra of a package (e.g. `numpy[blas]`)
+    Extra {
+        /// The package name
+        package: String,
+
+        /// The extra to activate.
+        extra: String,
+    },
+}
+
+impl Display for NameType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NameType::Base(name) => write!(f, "{name}"),
+            NameType::Extra { package, extra } => write!(f, "{package}[{extra}]"),
+        }
+    }
+}
+
+impl Ord for NameType {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            // Compare names first, then extras
+            (NameType::Base(name1), NameType::Base(name2)) => name1.cmp(name2),
+            (
+                NameType::Extra {
+                    package: a,
+                    extra: extra_a,
+                },
+                NameType::Extra {
+                    package: b,
+                    extra: extra_b,
+                },
+            ) => a.cmp(b).then_with(|| extra_a.cmp(extra_b)),
+            (NameType::Base(_), NameType::Extra { .. }) => std::cmp::Ordering::Greater,
+            (NameType::Extra { .. }, NameType::Base(_)) => std::cmp::Ordering::Less,
+        }
+    }
+}
+
+impl PartialOrd for NameType {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl From<&PackageName> for NameType {
+    fn from(value: &PackageName) -> Self {
+        NameType::Base(value.as_normalized().to_owned())
+    }
+}
+
+/// Maximum number of solvable IDs retained across cache keys and values.
+const DEPENDENCY_TIEBREAK_CACHE_CANDIDATE_LIMIT: usize = 100_000;
+
+/// Caches the dependency-based ordering of otherwise equivalent candidates.
+///
+/// Candidate lists can be sorted repeatedly while Resolvo encodes a solve. Each
+/// entry maps the exact input order to its sorted output so repeated sorts can
+/// reuse the result. The input order is part of the key because sorting is
+/// stable and therefore affects how equal candidates are ordered.
+///
+/// The cache belongs to a single [`CondaDependencyProvider`], which limits its
+/// lifetime to one solve. Only completed, non-cancelled sorts are inserted. To
+/// keep memory use bounded, `stored_candidate_ids` tracks the number of IDs
+/// retained across both keys and values.
+#[derive(Default)]
+struct DependencyTiebreakCache {
+    /// Exact candidate input order mapped to its dependency-based output order.
+    entries: HashMap<Vec<SolvableId>, Vec<SolvableId>>,
+
+    /// Number of candidate IDs retained across all keys and values.
+    stored_candidate_ids: usize,
+}
+
+/// An implement of [`resolvo::DependencyProvider`] that implements the
+/// ecosystem behavior for conda. This allows resolvo to solve for conda
+/// packages.
+#[derive(Default)]
+pub struct CondaDependencyProvider<'a> {
+    /// The pool that deduplicates data used by the provider.
+    pub pool: Pool<SolverMatchSpec<'a>, NameType>,
+    name_to_condition: RefCell<HashMap<NameId, ConditionId>>,
+
+    /// Holds all the cached candidates for each package name.
+    records: HashMap<NameId, Candidates>,
+
+    /// Caches the records of each package grouped by version, so a version spec
+    /// is tested once per version.
+    version_index: RefCell<VersionIndex<'a>>,
+
+    /// Caches the dependency-based ordering of equivalent package variants.
+    dependency_tiebreak_cache: RefCell<DependencyTiebreakCache>,
+
+    /// The rank of each candidate's version among the versions of its package,
+    /// indexed by solvable. `None` if its package has not been sorted yet.
+    version_ranks: RefCell<Vec<Option<u32>>>,
+
+    matchspec_to_highest_version:
+        RefCell<HashMap<VersionSetId, Option<(&'a rattler_conda_types::Version, bool)>>>,
+
+    parse_match_spec_cache: RefCell<MatchSpecParseCache>,
+
+    stop_time: Option<std::time::SystemTime>,
+
+    cancellation_token: Option<CancellationToken>,
+
+    strategy: SolveStrategy,
+
+    direct_dependencies: HashSet<NameId>,
+
+    dependency_overrides: HashMap<PackageName, Vec<PreparedDependencyOverride>>,
+
+    /// The channel priority mode used for this solve.
+    channel_priority: ChannelPriority,
+
+    /// Maps a channel to the priority rank of its [`PriorityTier`]. Lower
+    /// ranks indicate higher-priority tiers. Ranks are assigned in the order
+    /// tiers are first encountered in the repodata, which matches the order in
+    /// which channels were provided to the solver. All channels of a
+    /// multichannel share a single rank.
+    ///
+    /// This is only populated (and consulted) for
+    /// [`ChannelPriority::Flexible`] and [`ChannelPriority::VersionFirst`].
+    channel_order: HashMap<Option<String>, u32>,
+
+    /// The channel-priority rank of each solvable interned from the additional
+    /// records. Under [`ChannelPriority::Flexible`] and
+    /// [`ChannelPriority::VersionFirst`] an additional record ranks with the
+    /// highest-priority tier that contains its package name, like the
+    /// per-package tier the libsolv backend places its additional repos in.
+    /// Tracking ids rather than channel names leaves repodata records from the
+    /// same channel at their own rank.
+    additional_ranks: HashMap<SolvableId, u32>,
+}
+
+impl<'a> CondaDependencyProvider<'a> {
+    /// Constructs a new provider.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        repodata: impl IntoIterator<Item = RepoData<'a>>,
+        favored_records: &[&'a RepoDataRecord],
+        locked_records: &[&'a RepoDataRecord],
+        additional_records: &[&'a RepoDataRecord],
+        virtual_packages: &'a [GenericVirtualPackage],
+        match_specs: &[MatchSpec],
+        stop_time: Option<std::time::SystemTime>,
+        cancellation_token: Option<CancellationToken>,
+        channel_priority: ChannelPriority,
+        exclude_newer: Option<&ExcludeNewer>,
+        strategy: SolveStrategy,
+        dependency_overrides: Vec<DependencyOverride>,
+        excluded_candidates: &HashMap<Url, Arc<str>>,
+    ) -> Result<Self, SolveError> {
+        let pool = Pool::default();
+        let mut records: HashMap<NameId, Candidates> = HashMap::default();
+
+        // Applies the caller's exclusions and `exclude_newer` to a solvable
+        // that was just interned, reporting whether the record is excluded.
+        //
+        // Every site that interns a record has to go through this. The same
+        // record is interned once from the repodata and again when it is
+        // favored or locked, so an exclusion missed at any one of them lets the
+        // record back into the solve through that other door.
+        let exclude_if_requested =
+            |candidates: &mut Candidates, solvable: SolvableId, record: &RepoDataRecord| -> bool {
+                let reason = if let Some(reason) = excluded_candidates.get(&record.url) {
+                    pool.intern_string(&**reason)
+                } else if let Some(reason) =
+                    exclude_newer.and_then(|config| config.exclusion_reason(record))
+                {
+                    pool.intern_string(reason.to_string())
+                } else {
+                    return false;
+                };
+                candidates.excluded.push((solvable, reason));
+                true
+            };
+
+        // Add virtual packages to the records
+        for virtual_package in virtual_packages {
+            let name = pool.intern_package_name(NameType::from(&virtual_package.name));
+            let solvable =
+                pool.intern_solvable(name, SolverPackageRecord::VirtualPackage(virtual_package));
+            records.entry(name).or_default().candidates.push(solvable);
+        }
+
+        // Compute the direct dependencies
+        let direct_dependencies = match_specs
+            .iter()
+            .filter_map(|spec| spec.name.as_exact())
+            .map(|name| pool.intern_package_name(NameType::from(name)))
+            .collect();
+
+        // TODO: Normalize these channel names to urls so we can compare them correctly.
+        let channel_specific_specs = match_specs
+            .iter()
+            .filter(|spec| spec.channel.is_some())
+            .collect::<Vec<_>>();
+
+        // Hashmap that maps the package name to the priority tier it was first found in.
+        // Only maintained (and consulted) for [`ChannelPriority::Strict`].
+        let mut package_name_found_in_tier = HashMap::<&str, PriorityTier<'a>>::new();
+
+        // Maps each channel to the priority rank of its tier in the order tiers are
+        // first encountered (which matches the order channels were provided). Lower
+        // rank == higher priority. Used by `ChannelPriority::Flexible` and
+        // `ChannelPriority::VersionFirst`.
+        let mut channel_order = HashMap::<Option<String>, u32>::new();
+        let mut tier_order = HashMap::<PriorityTier<'a>, u32>::new();
+
+        // Maps each package name to the rank of the highest-priority tier that
+        // contains it. Only maintained for [`ChannelPriority::Flexible`] and
+        // [`ChannelPriority::VersionFirst`], so additional records can rank
+        // with the tier containing their package.
+        let mut package_rank = HashMap::<&str, u32>::new();
+
+        // A channel-specific spec that names one of these multichannels accepts
+        // records from every channel of that multichannel.
+        let repodata: Vec<RepoData<'a>> = repodata.into_iter().collect();
+        let multi_channels: HashSet<&'a str> = repodata
+            .iter()
+            .filter_map(|repo_data| repo_data.multi_channel)
+            .collect();
+
+        // Add additional records
+        for repo_data in repodata {
+            let multi_channel = repo_data.multi_channel;
+
+            // Iterate over all records and dedup records that refer to the same package
+            // data but with different archive types. This can happen if you
+            // have two variants of the same package but with different
+            // extensions. We prefer `.conda` packages over `.tar.bz`.
+            //
+            // Its important to insert the records in the same order as how they were
+            // presented to this function to ensure that each solve is
+            // deterministic. Iterating over HashMaps is not deterministic at
+            // runtime so instead we store the values in a Vec as we iterate over the
+            // records. This guarantees that the order of records remains the same over
+            // runs.
+            let mut ordered_repodata = Vec::with_capacity(repo_data.records.len());
+            let mut package_to_type: HashMap<&ArchiveIdentifier, (DistArchiveType, usize, bool)> =
+                HashMap::with_capacity(repo_data.records.len());
+
+            for record in repo_data.records {
+                // Determine if this record will be excluded by the caller or
+                // by exclude_newer. Both count here: keeping an excluded
+                // record over its other-format twin would throw away the only
+                // candidate the solver may still pick.
+                let excluded = excluded_candidates.contains_key(&record.url)
+                    || exclude_newer
+                        .as_ref()
+                        .is_some_and(|config| config.is_excluded(record));
+
+                let identifier = &record.identifier.identifier;
+                let archive_type = record.identifier.archive_type;
+                match package_to_type.get_mut(identifier) {
+                    None => {
+                        let idx = ordered_repodata.len();
+                        ordered_repodata.push(record);
+                        package_to_type.insert(identifier, (archive_type, idx, excluded));
+                    }
+                    Some((prev_archive_type, idx, previous_excluded)) => {
+                        if *previous_excluded && !excluded {
+                            // The previous package would have been excluded by the solver. If the
+                            // current record won't be excluded we should always use that.
+                            *prev_archive_type = archive_type;
+                            ordered_repodata[*idx] = record;
+                            *previous_excluded = false;
+                        } else if excluded && !*previous_excluded {
+                            // The previous package would not have been excluded
+                            // by the solver but
+                            // this one will, so we'll keep the previous one
+                            // regardless of the type.
+                        } else {
+                            match archive_type.cmp_preference(*prev_archive_type) {
+                                Ordering::Greater => {
+                                    // A previous package has a worse package "type", we'll use the
+                                    // current record instead.
+                                    *prev_archive_type = archive_type;
+                                    ordered_repodata[*idx] = record;
+                                    *previous_excluded = excluded;
+                                }
+                                Ordering::Less => {
+                                    // A previous package that we already stored
+                                    // is actually a package of a better
+                                    // "type" so we'll just use that instead
+                                    // (.conda > .whl > .tar.bz2)
+                                }
+                                Ordering::Equal => {
+                                    // Compare the complete record, including its source and
+                                    // checksums, rather than just its package identity.
+                                    if ordered_repodata[*idx] == record {
+                                        tracing::warn!(
+                                            identifier = %record.identifier,
+                                            url = %record.url,
+                                            "ignoring identical duplicate package record; keeping the first record"
+                                        );
+                                        continue;
+                                    }
+                                    return Err(SolveError::DuplicateRecords(
+                                        record.identifier.to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            for record in ordered_repodata {
+                let package_name =
+                    pool.intern_package_name(NameType::from(&record.package_record.name));
+                let solvable_id =
+                    pool.intern_solvable(package_name, SolverPackageRecord::Record(record));
+
+                // Update records with all entries in a single mutable borrow
+                let candidates = records.entry(package_name).or_default();
+                candidates.candidates.push(solvable_id);
+
+                let tier = PriorityTier::new(multi_channel, record.channel.as_deref());
+
+                // Flexible and version-first channel priority both consult
+                // channel ranks: flexible sorts on them before the version,
+                // version-first uses them only to break version ties.
+                if matches!(
+                    channel_priority,
+                    ChannelPriority::Flexible | ChannelPriority::VersionFirst
+                ) {
+                    let next_rank = tier_order.len() as u32;
+                    let rank = *tier_order.entry(tier).or_insert(next_rank);
+                    channel_order.entry(record.channel.clone()).or_insert(rank);
+                    package_rank
+                        .entry(record.package_record.name.as_normalized())
+                        .and_modify(|existing| *existing = (*existing).min(rank))
+                        .or_insert(rank);
+                }
+
+                // Exclusions the caller derived from outside the repodata, for
+                // example from what a local package cache holds, and records
+                // newer than the `exclude_newer` cutoff.
+                exclude_if_requested(candidates, solvable_id, record);
+
+                // Add to excluded when package is not in the specified channel.
+                if !channel_specific_specs.is_empty()
+                    && let Some(spec) = channel_specific_specs.iter().find(|&&spec| {
+                        spec.name
+                            .as_exact()
+                            .expect("expecting an exact package name")
+                            .as_normalized()
+                            == record.package_record.name.as_normalized()
+                    })
+                {
+                    // Check if the spec has a channel, and compare it to the repodata
+                    // channel
+                    if let Some(spec_channel) = &spec.channel
+                        && !is_in_requested_channel(
+                            spec_channel,
+                            record,
+                            multi_channel,
+                            &multi_channels,
+                        )
+                    {
+                        tracing::debug!(
+                            "Ignoring {} {} because it was not requested from that channel.",
+                            &record.package_record.name.as_normalized(),
+                            match &record.channel {
+                                Some(channel) => format!("from {channel}"),
+                                None => "without a channel".to_string(),
+                            }
+                        );
+                        // Add record to the excluded with reason of being in the non
+                        // requested channel.
+                        let message = format!(
+                            "candidate not in requested channel: '{}'",
+                            spec_channel
+                                .name
+                                .clone()
+                                .unwrap_or(spec_channel.base_url.to_string())
+                        );
+                        candidates
+                            .excluded
+                            .push((solvable_id, pool.intern_string(message)));
+                        continue;
+                    }
+                }
+
+                // Enforce channel priority only in strict mode. Other modes do not
+                // consult this map, so avoid allocating and populating it for every record.
+                if channel_priority == ChannelPriority::Strict {
+                    match package_name_found_in_tier
+                        .entry(record.package_record.name.as_normalized())
+                    {
+                        std::collections::hash_map::Entry::Occupied(first_tier) => {
+                            // Add the record to the excluded list when it is from a different tier.
+                            if *first_tier.get() != tier {
+                                if let Some(channel) = &record.channel {
+                                    tracing::debug!(
+                                        "Ignoring '{}' from '{}' because of strict channel priority.",
+                                        &record.package_record.name.as_normalized(),
+                                        channel
+                                    );
+                                    candidates.excluded.push((
+                                        solvable_id,
+                                        pool.intern_string(format!(
+                                            "due to strict channel priority not using this option from: '{channel}'",
+                                        )),
+                                    ));
+                                } else {
+                                    tracing::debug!(
+                                        "Ignoring '{}' without a channel because of strict channel priority.",
+                                        &record.package_record.name.as_normalized(),
+                                    );
+                                    candidates.excluded.push((
+                                        solvable_id,
+                                        pool.intern_string("due to strict channel priority not using from an unknown channel".to_string()),
+                                    ));
+                                }
+                            }
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(tier);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add additional packages to the records. These are plain candidates:
+        // they are neither favored nor locked, so the solver weighs them like
+        // any record from the repodata. These records may represent packages
+        // that are not in repodata for the current solve. But are already
+        // installed in the prefix.
+        let mut additional_ranks = HashMap::with_capacity(additional_records.len());
+        for &additional_record in additional_records {
+            let name =
+                pool.intern_package_name(NameType::from(&additional_record.package_record.name));
+            let solvable =
+                pool.intern_solvable(name, SolverPackageRecord::Record(additional_record));
+            // No channel contains the package, so it ranks with the top tier.
+            let rank = package_rank
+                .get(additional_record.package_record.name.as_normalized())
+                .copied()
+                .unwrap_or(0);
+            additional_ranks.insert(solvable, rank);
+            let candidates = records.entry(name).or_default();
+            candidates.candidates.push(solvable);
+            exclude_if_requested(candidates, solvable, additional_record);
+        }
+
+        // Add favored packages to the records.
+        //
+        // An excluded record must not become the favored one: favoring means
+        // the solver *prefers* it, so that would turn the exclusion into the
+        // opposite of what the caller asked for.
+        for &favored_record in favored_records {
+            let name =
+                pool.intern_package_name(NameType::from(&favored_record.package_record.name));
+            let solvable = pool.intern_solvable(name, SolverPackageRecord::Record(favored_record));
+            let candidates = records.entry(name).or_default();
+            candidates.candidates.push(solvable);
+
+            if !exclude_if_requested(candidates, solvable, favored_record) {
+                candidates.favored = Some(solvable);
+            }
+        }
+
+        for &locked_record in locked_records {
+            let name = pool.intern_package_name(NameType::from(&locked_record.package_record.name));
+            let solvable = pool.intern_solvable(name, SolverPackageRecord::Record(locked_record));
+            let candidates = records.entry(name).or_default();
+            candidates.candidates.push(solvable);
+
+            // The pin and the exclusion are applied independently. A locked
+            // record that is also excluded makes the solve unsatisfiable when
+            // the package is needed. Dropping the pin instead would let the
+            // solver quietly select a different version of a deliberately
+            // pinned package. The conflict report names the pin as the
+            // culprit together with the exclusion reason.
+            exclude_if_requested(candidates, solvable, locked_record);
+            candidates.locked = Some(solvable);
+        }
+
+        // The dependencies for all candidates are always available.
+        for candidates in records.values_mut() {
+            candidates.hint_dependencies_available = HintDependenciesAvailable::All;
+        }
+
+        // Build a lookup table for dependency overrides keyed by target package name.
+        let mut override_map: HashMap<PackageName, Vec<PreparedDependencyOverride>> =
+            HashMap::new();
+        for rule in dependency_overrides {
+            let Some(name) = rule.override_spec.name.as_exact().cloned() else {
+                continue;
+            };
+            override_map
+                .entry(name)
+                .or_default()
+                .push(PreparedDependencyOverride {
+                    override_spec: rule.override_spec.to_string(),
+                    package_matcher: rule.package_matcher,
+                });
+        }
+
+        Ok(Self {
+            pool,
+            name_to_condition: RefCell::default(),
+            records,
+            version_index: RefCell::default(),
+            dependency_tiebreak_cache: RefCell::default(),
+            version_ranks: RefCell::default(),
+            matchspec_to_highest_version: RefCell::default(),
+            parse_match_spec_cache: RefCell::default(),
+            stop_time,
+            cancellation_token,
+            strategy,
+            direct_dependencies,
+            dependency_overrides: override_map,
+            channel_priority,
+            channel_order,
+            additional_ranks,
+        })
+    }
+
+    /// Returns the priority rank for a channel, where a lower rank indicates a
+    /// higher-priority channel. Channels of the same multichannel share a rank.
+    /// Channels not seen during the construction sort last. Channel strings are
+    /// compared byte-for-byte as URL normalization is still missing (see TODO:
+    /// Normalize these channel names to urls above)
+    fn channel_rank(&self, channel: &Option<String>) -> u32 {
+        self.channel_order.get(channel).copied().unwrap_or(u32::MAX)
+    }
+
+    /// Returns all package names
+    pub fn package_names(&self) -> impl Iterator<Item = NameId> + use<'_, 'a> {
+        self.records.keys().copied()
+    }
+
+    fn extra_condition(&self, package: &PackageName, extra: &str) -> ConditionId {
+        let name_id = self.pool.intern_package_name(NameType::Extra {
+            package: package.as_normalized().to_owned(),
+            extra: extra.to_owned(),
+        });
+        let mut name_to_condition = self.name_to_condition.borrow_mut();
+        *name_to_condition.entry(name_id).or_insert_with(|| {
+            let version_set = extra_version_set(&self.pool, package.clone(), extra.to_owned());
+            self.pool
+                .intern_condition(Condition::Requirement(version_set))
+        })
+    }
+
+    /// Returns the replacement spec for a dependency of `record`, if an
+    /// override rule applies. `dep_name` is the normalized name of the
+    /// dependency's package.
+    fn apply_dependency_override(&self, record: &RepoDataRecord, dep_name: &str) -> Option<&str> {
+        let rules = self.dependency_overrides.get(dep_name)?;
+        for rule in rules {
+            if rule.package_matcher.matches(&record.package_record) {
+                return Some(&rule.override_spec);
+            }
+        }
+        None
+    }
+}
+
+/// Returns true if `record`, which was requested through `multi_channel`,
+/// comes from the channel that a match spec asked for. A channel named after
+/// one of the multichannels of the solve refers to every channel of that
+/// multichannel.
+fn is_in_requested_channel(
+    spec_channel: &Channel,
+    record: &RepoDataRecord,
+    multi_channel: Option<&str>,
+    multi_channels: &HashSet<&str>,
+) -> bool {
+    match spec_channel
+        .name
+        .as_deref()
+        .filter(|name| multi_channels.contains(name))
+    {
+        Some(requested) => multi_channel == Some(requested),
+        None => record.channel.as_ref() == Some(&spec_channel.canonical_name()),
+    }
+}
+
+/// The reason why the solver was cancelled
+pub enum CancelReason {
+    /// The solver was cancelled because the timeout was reached
+    Timeout,
+
+    /// The solver was cancelled because a [`CancellationToken`] was triggered
+    /// by the caller.
+    Cancelled,
+}
+
+impl Interner for CondaDependencyProvider<'_> {
+    type NameId = NameId;
+    type SolvableId = SolvableId;
+
+    fn display_solvable(&self, solvable: SolvableId) -> impl Display + '_ {
+        &self.pool.resolve_solvable(solvable).record
+    }
+
+    fn resolve_condition(&self, condition: ConditionId) -> Condition {
+        self.pool.resolve_condition(condition).clone()
+    }
+
+    fn version_sets_in_union(
+        &self,
+        version_set_union: VersionSetUnionId,
+    ) -> impl Iterator<Item = VersionSetId> {
+        self.pool.resolve_version_set_union(version_set_union)
+    }
+
+    fn display_merged_solvables(&self, solvables: &[SolvableId]) -> impl Display + '_ {
+        // When abbreviating, the number of versions shown at the start and end of
+        // the list around the ellipsis.
+        const HEAD: usize = 2;
+        const TAIL: usize = 1;
+
+        if solvables.is_empty() {
+            return String::new();
+        }
+
+        // Collect the distinct versions in sorted order. The same version can
+        // appear multiple times when there are several builds of it.
+        let versions = solvables
+            .iter()
+            .filter_map(|&id| self.pool.resolve_solvable(id).record.version())
+            .sorted()
+            .dedup()
+            .collect::<Vec<_>>();
+
+        // Abbreviate long lists with an ellipsis so a package with many versions
+        // does not flood the error message, similar to micromamba.
+        let versions = if versions.len() > HEAD + TAIL + 1 {
+            versions[..HEAD]
+                .iter()
+                .map(ToString::to_string)
+                .chain(std::iter::once("...".to_string()))
+                .chain(
+                    versions[versions.len() - TAIL..]
+                        .iter()
+                        .map(ToString::to_string),
+                )
+                .join(" | ")
+        } else {
+            versions.iter().map(ToString::to_string).join(" | ")
+        };
+
+        let name = self.display_solvable_name(solvables[0]);
+        let result = format!("{name} {versions}");
+        result.trim_end().to_string()
+    }
+
+    fn display_name(&self, name: NameId) -> impl Display + '_ {
+        self.pool.resolve_package_name(name)
+    }
+
+    fn display_version_set(&self, version_set: VersionSetId) -> impl Display + '_ {
+        self.pool.resolve_version_set(version_set)
+    }
+
+    fn display_string(&self, string_id: StringId) -> impl Display + '_ {
+        self.pool.resolve_string(string_id)
+    }
+
+    fn version_set_name(&self, version_set: VersionSetId) -> NameId {
+        self.pool.resolve_version_set_package_name(version_set)
+    }
+
+    fn solvable_name(&self, solvable: SolvableId) -> NameId {
+        self.pool.resolve_solvable(solvable).name
+    }
+}
+
+impl DependencyProvider for CondaDependencyProvider<'_> {
+    async fn sort_candidates(&self, solver: &SolverCache<Self>, solvables: &mut [SolvableId]) {
+        if solvables.is_empty() {
+            // Short circuit if there are no solvables to sort
+            return;
+        }
+
+        let mut highest_version_spec = self.matchspec_to_highest_version.borrow_mut();
+
+        let (strategy, dependency_strategy) = match self.strategy {
+            SolveStrategy::Highest => (CompareStrategy::Default, CompareStrategy::Default),
+            SolveStrategy::LowestVersion => (
+                CompareStrategy::LowestVersion,
+                CompareStrategy::LowestVersion,
+            ),
+            SolveStrategy::LowestVersionDirect => {
+                if self
+                    .direct_dependencies
+                    .contains(&self.pool.resolve_solvable(solvables[0]).name)
+                {
+                    (CompareStrategy::LowestVersion, CompareStrategy::Default)
+                } else {
+                    (CompareStrategy::Default, CompareStrategy::Default)
+                }
+            }
+        };
+
+        // Custom sorter that sorts by name, version, and build
+        // and then by the maximization of dependency versions
+        // more information can be found at the struct location
+        SolvableSorter::new(solver, strategy, dependency_strategy)
+            .sort(solvables, &mut highest_version_spec);
+    }
+
+    async fn get_candidates(&self, name: NameId) -> Option<Candidates> {
+        match self.pool.resolve_package_name(name) {
+            NameType::Base(_) => self.records.get(&name).cloned(),
+            NameType::Extra { package, extra } => {
+                // For extras, we need to create a new candidates object
+                // that contains only the extra solvable.
+                let extra_solvable = add_extra(
+                    &self.pool,
+                    PackageName::new_unchecked(package),
+                    extra.clone(),
+                );
+                Some(Candidates {
+                    candidates: vec![extra_solvable],
+                    favored: None,
+                    locked: None,
+                    excluded: Vec::new(),
+                    hint_dependencies_available: HintDependenciesAvailable::All,
+                    // Spread the rest, so the literal compiles against every
+                    // resolvo version in the supported range.
+                    ..Default::default()
+                })
+            }
+        }
+    }
+
+    async fn get_dependencies(&self, solvable: SolvableId) -> Dependencies {
+        let mut dependencies = KnownDependencies::default();
+
+        let record = match &self.pool.resolve_solvable(solvable).record {
+            SolverPackageRecord::Record(rec) => rec,
+            SolverPackageRecord::Extra { .. } | SolverPackageRecord::VirtualPackage(_) => {
+                return Dependencies::Known(dependencies);
+            }
+        };
+
+        let mut parse_match_spec_cache = self.parse_match_spec_cache.borrow_mut();
+
+        // Add regular dependencies
+        for depends in record.package_record.depends.iter() {
+            // Check for overrides. The override map is keyed by the exact
+            // package name, which can be extracted with a cheap scan instead
+            // of parsing the entire matchspec.
+            let dep_str = if self.dependency_overrides.is_empty() {
+                depends.as_str()
+            } else {
+                let dep_name = PackageName::normalized_name_from_matchspec_str(depends);
+                self.apply_dependency_override(record, &dep_name)
+                    .unwrap_or(depends.as_str())
+            };
+            let specs = match parse_match_spec(&self.pool, dep_str, &mut parse_match_spec_cache) {
+                Ok(version_set_id) => version_set_id,
+                Err(e) => {
+                    tracing::debug!(
+                        "{}/{} from {} has invalid dependency '{}': {}, this variant will be ignored",
+                        record.package_record.subdir,
+                        record.identifier,
+                        record.channel.as_deref().unwrap_or("unknown"),
+                        dep_str,
+                        e
+                    );
+                    let reason = self
+                        .pool
+                        .intern_string(format!("the dependency '{dep_str}' failed to parse: {e}",));
+
+                    return Dependencies::Unknown(reason);
+                }
+            };
+
+            let (version_set_ids, condition_id) = specs;
+            dependencies
+                .requirements
+                .extend(
+                    version_set_ids
+                        .into_iter()
+                        .map(|id| ConditionalRequirement {
+                            requirement: id.into(),
+                            condition: condition_id,
+                        }),
+                );
+        }
+
+        // Add constraints from the record
+        for constrains in record.package_record.constrains.iter() {
+            let (version_set_ids, condition_id) = match parse_match_spec(
+                &self.pool,
+                constrains,
+                &mut parse_match_spec_cache,
+            ) {
+                Ok(version_set_id) => version_set_id,
+                Err(e) => {
+                    tracing::debug!(
+                        "{}/{} from {} has invalid constraint '{}': {}, this variant will be ignored",
+                        record.package_record.subdir,
+                        record.identifier,
+                        record.channel.as_deref().unwrap_or("unknown"),
+                        constrains,
+                        e
+                    );
+                    let reason = self.pool.intern_string(format!(
+                        "the constrains '{constrains}' failed to parse: {e}",
+                    ));
+
+                    return Dependencies::Unknown(reason);
+                }
+            };
+            if condition_id.is_some() {
+                tracing::warn!(
+                    "The package '{name}' has a constraint with a condition '{constrains}'. This is not supported by the solver and will be ignored.",
+                    name = record.package_record.name.as_normalized(),
+                    constrains = constrains
+                );
+            }
+            dependencies.constrains.extend(version_set_ids);
+        }
+
+        // Add extras
+        for (extra, matchspec) in record
+            .package_record
+            .extra_depends
+            .iter()
+            .flat_map(|(extra, deps)| deps.iter().map(move |dep| (extra, dep)))
+        {
+            let (version_set_ids, spec_condition) = match parse_match_spec(
+                &self.pool,
+                matchspec,
+                &mut parse_match_spec_cache,
+            ) {
+                Ok(version_set_id) => version_set_id,
+                Err(e) => {
+                    tracing::debug!(
+                        "{}/{} from {} has invalid extra dependency '{}': {}, this variant will be ignored",
+                        record.package_record.subdir,
+                        record.identifier,
+                        record.channel.as_deref().unwrap_or("unknown"),
+                        matchspec,
+                        e
+                    );
+                    let reason = self.pool.intern_string(format!(
+                        "the constrains '{matchspec}' failed to parse: {e}",
+                    ));
+
+                    return Dependencies::Unknown(reason);
+                }
+            };
+
+            // Add them as conditional requirements (e.g. `numpy[when="extra"]`).
+            let extra_condition = self.extra_condition(&record.package_record.name, extra);
+            for version_set_id in version_set_ids {
+                dependencies.requirements.push(ConditionalRequirement {
+                    requirement: version_set_id.into(),
+                    condition: if let Some(condition) = spec_condition {
+                        let condition = resolvo::Condition::Binary(
+                            resolvo::LogicalOperator::And,
+                            extra_condition,
+                            condition,
+                        );
+                        Some(self.pool.intern_condition(condition))
+                    } else {
+                        Some(extra_condition)
+                    },
+                });
+            }
+        }
+
+        Dependencies::Known(dependencies)
+    }
+
+    async fn filter_candidates(
+        &self,
+        candidates: &[SolvableId],
+        version_set: VersionSetId,
+        inverse: bool,
+    ) -> Vec<SolvableId> {
+        let spec = self.pool.resolve_version_set(version_set);
+        match spec {
+            SolverMatchSpec::MatchSpec(spec) => self.version_index.borrow_mut().filter(
+                &self.pool,
+                &self.records,
+                self.pool.resolve_version_set_package_name(version_set),
+                candidates,
+                spec,
+                inverse,
+            ),
+            SolverMatchSpec::Extra => {
+                // Extras are already filtered by name.
+                if inverse {
+                    Vec::new()
+                } else {
+                    candidates.to_vec()
+                }
+            }
+            SolverMatchSpec::_Phantom(_) => unreachable!(),
+        }
+    }
+
+    fn should_cancel_with_value(&self) -> Option<Box<dyn std::any::Any>> {
+        if let Some(token) = &self.cancellation_token
+            && token.is_cancelled()
+        {
+            return Some(Box::new(CancelReason::Cancelled));
+        }
+        if let Some(stop_time) = self.stop_time
+            && std::time::SystemTime::now() > stop_time
+        {
+            return Some(Box::new(CancelReason::Timeout));
+        }
+        None
+    }
+}
+
+/// A [`Solver`] implemented using the `resolvo` library
+#[derive(Default)]
+pub struct Solver;
+
+impl super::SolverImpl for Solver {
+    type RepoData<'a> = RepoData<'a>;
+
+    #[allow(clippy::redundant_closure_for_method_calls)]
+    fn solve<
+        'a,
+        R: IntoRepoData<'a, Self::RepoData<'a>>,
+        TAvailablePackagesIterator: IntoIterator<Item = R>,
+    >(
+        &mut self,
+        task: SolverTask<'a, TAvailablePackagesIterator>,
+    ) -> Result<SolverResult, SolveError> {
+        let stop_time = task
+            .timeout
+            .map(|timeout| std::time::SystemTime::now() + timeout);
+
+        // Construct a provider that can serve the data.
+        let dependency_overrides: Vec<DependencyOverride> = task
+            .dependency_overrides
+            .into_iter()
+            .map(|(package_matcher, override_spec)| DependencyOverride {
+                package_matcher,
+                override_spec,
+            })
+            .collect();
+
+        let provider = CondaDependencyProvider::new(
+            task.available_packages.into_iter().map(|r| r.into()),
+            &task.locked_packages,
+            &task.pinned_packages,
+            &task.additional_packages,
+            &task.virtual_packages,
+            task.specs.clone().as_ref(),
+            stop_time,
+            task.cancellation_token.clone(),
+            task.channel_priority,
+            task.exclude_newer.as_ref(),
+            task.strategy,
+            dependency_overrides,
+            &task.excluded_candidates,
+        )?;
+
+        // Construct the requirements that the solver needs to satisfy.
+        let virtual_package_requirements = task.virtual_packages.iter().map(|spec| {
+            let name_id = provider
+                .pool
+                .intern_package_name(NameType::from(&spec.name));
+            provider
+                .pool
+                .intern_version_set(name_id, NamelessMatchSpec::default().into())
+        });
+
+        let root_requirements = task.specs.into_iter().flat_map(|spec| {
+            let condition_id = if let Some(condition) = spec.condition.as_ref() {
+                let mut cache = provider.parse_match_spec_cache.borrow_mut();
+                Some(parse_condition(condition, &provider.pool, &mut cache))
+            } else {
+                None
+            };
+
+            version_sets_for_match_spec(&provider.pool, spec)
+                .into_iter()
+                .map(move |version_set_id| ConditionalRequirement {
+                    requirement: version_set_id.into(),
+                    condition: condition_id,
+                })
+        });
+
+        let all_requirements: Vec<_> = virtual_package_requirements
+            .map(ConditionalRequirement::from)
+            .chain(root_requirements)
+            .collect();
+
+        let root_constraints = task
+            .constraints
+            .iter()
+            .map(|spec| {
+                let (PackageNameMatcher::Exact(name), spec) = spec.clone().into_nameless() else {
+                    unimplemented!("only exact package names are supported");
+                };
+                let name_id = provider.pool.intern_package_name(NameType::from(&name));
+                provider.pool.intern_version_set(name_id, spec.into())
+            })
+            .collect();
+
+        let problem = Problem::new()
+            .requirements(all_requirements.clone())
+            .constraints(root_constraints);
+
+        // Construct a solver and solve the problems in the queue
+        let mut solver = LibSolvRsSolver::new(provider);
+        let solvables = solver.solve(problem).map_err(|unsolvable_or_cancelled| {
+            match unsolvable_or_cancelled {
+                UnsolvableOrCancelled::Unsolvable(problem) => {
+                    SolveError::Unsolvable(vec![problem.display_user_friendly(&solver).to_string()])
+                }
+                // We are not doing this as of yet
+                // put a generic message in here for now
+                UnsolvableOrCancelled::Cancelled(_) => SolveError::Cancelled,
+            }
+        })?;
+
+        // Get the resulting packages from the solver.
+        let mut extras: HashMap<PackageName, Vec<String>> = HashMap::new();
+        let mut records = Vec::new();
+
+        for id in solvables {
+            match &solver.provider().pool.resolve_solvable(id).record {
+                SolverPackageRecord::Record(rec) => {
+                    records.push((*rec).clone());
+                }
+                SolverPackageRecord::Extra { package, extra } => {
+                    extras
+                        .entry(package.clone())
+                        .or_default()
+                        .push(extra.clone());
+                }
+                SolverPackageRecord::VirtualPackage(_) => {}
+            }
+        }
+
+        Ok(SolverResult { records, extras })
+    }
+}
+
+fn parse_match_spec(
+    pool: &Pool<SolverMatchSpec<'_>, NameType>,
+    spec_str: &str,
+    parse_match_spec_cache: &mut MatchSpecParseCache,
+) -> Result<(Vec<VersionSetId>, Option<ConditionId>), ParseMatchSpecError> {
+    if let Some(cached) = parse_match_spec_cache.get(spec_str) {
+        return Ok(cached.clone());
+    }
+
+    // Parse the match spec and extract the name of the package it depends on.
+    // Enable conditionals parsing to support dependencies with conditions like `numpy[when="python >=3.9"]`
+    let match_spec = MatchSpec::from_str(
+        spec_str,
+        ParseMatchSpecOptions::lenient().with_repodata_revision(RepodataRevision::V3),
+    )?;
+    let condition_id = if let Some(condition) = match_spec.condition.as_ref() {
+        let condition_id = parse_condition(condition, pool, parse_match_spec_cache);
+        Some(condition_id)
+    } else {
+        None
+    };
+
+    // Get the version sets for the match spec.
+    let version_set_ids = version_sets_for_match_spec(pool, match_spec);
+
+    // Store in the match spec cache
+    parse_match_spec_cache.insert(
+        spec_str.to_string(),
+        (version_set_ids.clone(), condition_id),
+    );
+
+    Ok((version_set_ids, condition_id))
+}
+
+fn version_sets_for_match_spec(
+    pool: &Pool<SolverMatchSpec<'_>, NameType>,
+    spec: MatchSpec,
+) -> Vec<VersionSetId> {
+    let (PackageNameMatcher::Exact(name), spec) = spec.into_nameless() else {
+        unimplemented!("only exact package names are supported");
+    };
+
+    // Add a dependency on each extra.
+    let mut version_set_ids = vec![];
+    for extra in spec.extras.iter().flatten() {
+        version_set_ids.push(extra_version_set(pool, name.clone(), extra.clone()));
+    }
+
+    // Create a version set for the match spec itself.
+    let dependency_name = pool.intern_package_name(NameType::from(&name));
+    let version_set_id = pool.intern_version_set(dependency_name, spec.into());
+    version_set_ids.push(version_set_id);
+
+    version_set_ids
+}
+
+/// Adds a particular "extra" to the set of solvables
+pub fn add_extra(
+    pool: &Pool<SolverMatchSpec<'_>, NameType>,
+    package_name: PackageName,
+    extra: String,
+) -> SolvableId {
+    let name = NameType::Extra {
+        package: package_name.as_normalized().to_owned(),
+        extra: extra.clone(),
+    };
+    let name_id = pool.intern_package_name(name);
+
+    // Ensure that there is a single solvable for this extra.
+    pool.intern_solvable(
+        name_id,
+        SolverPackageRecord::Extra {
+            package: package_name,
+            extra,
+        },
+    )
+}
+
+/// Returns a version set for a particular package name and extra.
+pub fn extra_version_set(
+    pool: &Pool<SolverMatchSpec<'_>, NameType>,
+    package_name: PackageName,
+    extra: String,
+) -> VersionSetId {
+    let name = NameType::Extra {
+        package: package_name.as_normalized().to_owned(),
+        extra,
+    };
+    let name_id = pool.intern_package_name(name);
+    pool.intern_version_set(name_id, SolverMatchSpec::Extra)
+}
+
+/// Parses a condition from a `MatchSpecCondition` and returns the corresponding `ConditionId`.
+fn parse_condition(
+    condition: &MatchSpecCondition,
+    pool: &Pool<SolverMatchSpec<'_>, NameType>,
+    parse_match_spec_cache: &mut MatchSpecParseCache,
+) -> ConditionId {
+    match condition {
+        MatchSpecCondition::MatchSpec(match_spec) => {
+            // Parse the match spec and intern it
+            let (spec, condition) =
+                parse_match_spec(pool, &match_spec.to_string(), parse_match_spec_cache).unwrap();
+            if let Some(_condition) = condition {
+                panic!("conditions cannot be nested");
+            }
+            let conditions = spec.into_iter().map(resolvo::Condition::Requirement);
+            // Intern the conditions
+            let condition_ids = conditions
+                .into_iter()
+                .map(|c| pool.intern_condition(c))
+                .collect_vec();
+            // Create a union of the conditions
+            if condition_ids.is_empty() {
+                panic!("match spec condition must have at least one version set");
+            } else if condition_ids.len() == 1 {
+                condition_ids[0]
+            } else {
+                // Otherwise, create a union of the conditions
+                let mut result = condition_ids[0];
+                for &condition_id in &condition_ids[1..] {
+                    let union_condition = resolvo::Condition::Binary(
+                        resolvo::LogicalOperator::And,
+                        result,
+                        condition_id,
+                    );
+                    result = pool.intern_condition(union_condition);
+                }
+                result
+            }
+        }
+        MatchSpecCondition::And(left, right) => {
+            let condition_id_lhs = parse_condition(left, pool, parse_match_spec_cache);
+            let condition_id_rhs = parse_condition(right, pool, parse_match_spec_cache);
+            // Intern the AND condition
+            let condition = resolvo::Condition::Binary(
+                resolvo::LogicalOperator::And,
+                condition_id_lhs,
+                condition_id_rhs,
+            );
+            pool.intern_condition(condition)
+        }
+        MatchSpecCondition::Or(left, right) => {
+            let condition_id_lhs = parse_condition(left, pool, parse_match_spec_cache);
+            let condition_id_rhs = parse_condition(right, pool, parse_match_spec_cache);
+            // Intern the OR condition
+            let condition = resolvo::Condition::Binary(
+                resolvo::LogicalOperator::Or,
+                condition_id_lhs,
+                condition_id_rhs,
+            );
+            pool.intern_condition(condition)
+        }
+    }
+}
