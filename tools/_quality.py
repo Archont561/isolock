@@ -78,6 +78,8 @@ def acceptance(_: argparse.Namespace) -> None:
             "epoch_rollover",
             "--test",
             "ingestion_profiles",
+            "--test",
+            "reviewed_ingestion",
             "--offline",
         ]
     )
